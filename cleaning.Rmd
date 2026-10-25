@@ -1,0 +1,410 @@
+# EDA and Data cleaning
+
+Sources: 
+- Macroeconomic predictors: https://www.stevanovic.uqam.ca/DS_LCMD.html 
+- Canadian CPI: https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1810000401 (check at 8:30pm)
+- FRED-MD data: https://www.stlouisfed.org/research/economists/mccracken/fred-databases 
+
+References:
+
+Fortin-Gagnon, O., Leroux, M., Stevanovic, D. and Surprenant, S. (2022), A large Canadian database for macroeconomic analysis. Canadian Journal of Economics/Revue canadienne d'économique, 55: 1799-1833. https://doi.org/10.1111/caje.12618 
+
+Statistics Canada. Table 18-10-0004-01  Consumer Price Index, monthly, not seasonally adjusted. DOI: https://doi.org/10.25318/1810000401-eng
+
+## Data is obtained from:
+
+**August 2026** zip file downloaded from the data source
+
+readme.txt content: 
+
+These files contain datasets used in: 
+Fortin-Gagnon, Leroux, Stevanovic and Surprenant (2018) A Large Canadian Data for Macroeconomic Analysis.
+
+- `CAN_MD.xlsx`: raw data as collected from StatCan. It starts from 1914 because the CPI series is available from that year
+- `TR_CAN_MD.xlsx`: data from CAN_MD.xlsx transformed to induce stationarity.
+- `balanced_can_md.xlsx`: stationary and balanced panel starting from 1981M01. Missing values are replaced by EM algorithm. 
+- `Table_can_md.xlsx`: detailed data description
+
+We use `balanced_can_md.xlsx` as the data is already stationary and balanced panel. 
+
+From `Table_can_md.xlsx` we can see that the following variables are discontinued and ends in September 2020. we should remove these from the data source 
+- `CRED_T-discontinued`
+- `CRED_HOURS_discontinued`
+- `CRED_MORT_discontinued`
+- `CRED_CONS_discontinued`
+- `CRED_BUS_discontinued` 
+
+```{r}
+# install packages, should only run once
+# install.packages(c("seasonal", "x13binary", "readr", "dplyr", "ggplot2", 
+#                  "tidyr", "lubridate"), repos = "https://cloud.r-project.org")
+
+library(seasonal)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+```
+
+## Canadian Macroeconomic indicators data
+
+```{r}
+# import canadian macroeconomic indicators data
+can_md <- read_csv("data/raw/balanced_can_md.csv")
+
+# inspect can_md
+dim(can_md)
+names(can_md)
+head(can_md) # data starts from 1981-01-01
+tail(can_md) # last data is 2026-07-01
+```
+
+```{r}
+# check missing values
+missing_count <- colSums(is.na(can_md))
+missing_count[missing_count > 0]
+sum(is.na(can_md))
+
+# check duplicates 
+sum(duplicated(can_md$Date))
+range(can_md$Date)
+
+# check date range, if every month is present
+nrow(can_md)
+expected_dates <- seq(
+  min(can_md$Date),
+  max(can_md$Date),
+  by = "month"
+)
+setdiff(expected_dates, can_md$Date)
+```
+
+```{r}
+discontinued_vars <- c(
+  "CRED_T_discontinued",
+  "CRED_HOUS_discontinued",
+  "CRED_MORT_discontinued",
+  "CRED_CONS_discontinued",
+  "CRE_BUS_discontinued"
+)
+
+intersect(discontinued_vars, names(can_md))
+can_md <- can_md %>%
+  select(-any_of(discontinued_vars))
+
+# check whether removed
+sum(is.na(can_md))
+```
+
+```{r}
+# rename variables to standardise across datasets
+can_md <- can_md %>%
+  rename(date = Date) %>%
+  mutate(date = as.Date(date)) %>%
+  arrange(date)
+
+class(can_md$date)
+range(can_md$date)
+sum(duplicated(can_md$date))
+```
+
+## CPI Data
+Testing unseasonally adjusted data -> ARIMA adjustment -> compare against officially seasonally adjusted data. Unsure of which one to use... 
+
+```{r}
+# import canadian CPI data
+cpi_raw <- read_csv("data/raw/1810000401_databaseLoadingData.csv", show_col_types = FALSE)
+cpi_official_raw <- read_csv("data/raw/1810000601_databaseLoadingData.csv", show_col_types = FALSE)
+```
+
+```{r}
+# clean column headers
+cpi <- cpi_raw %>%
+  transmute(
+    date = as.Date(paste0(REF_DATE, "-01")),
+    cpi = as.numeric(VALUE)
+  ) %>%
+  arrange(date)
+
+cpi_official <- cpi_official_raw %>%
+  transmute(
+    date = as.Date(paste0(REF_DATE, "-01")),
+    cpi_official = as.numeric(VALUE)
+  ) %>%
+  arrange(date)
+```
+
+```{r}
+head(cpi)
+tail(cpi)
+
+range(cpi$date)
+range(cpi_official$date)
+
+sum(duplicated(cpi$date))
+sum(duplicated(cpi_official$date))
+```
+
+Since the data is not seasonally adjusted, we use `X-13ARIMA-SEATS` to seasonally adjust. 
+
+```{r}
+# check for regularly spaced time series
+cpi_ts <- ts(
+  cpi$cpi,
+  start = c(
+    year(min(cpi$date)),
+    month(min(cpi$date))
+  ),
+  frequency = 12
+)
+
+start(cpi_ts)
+end(cpi_ts)
+frequency(cpi_ts)
+```
+
+```{r}
+# to seasonally adjust our CPI, we use ARIMA
+# Estimate seasonal adjustment
+sa_model <- seas(
+  cpi_ts,
+  x11 = ""
+)
+
+# Extract seasonally adjusted CPI
+cpi_sa <- final(sa_model)
+
+# Examine model
+summary(sa_model)
+
+# Plot results
+plot(sa_model)
+```
+
+```{r}
+cpi_adjusted <- data.frame(
+  date = cpi$date,
+  cpi_unadjusted = cpi$cpi,
+  cpi_adjusted = as.numeric(cpi_sa)
+)
+```
+
+```{r}
+comparison <- cpi_adjusted %>%
+  inner_join(cpi_official, by = "date")
+
+range(comparison$date)
+nrow(comparison)
+```
+
+```{r}
+# plot self-adjusted and officially adjusted
+comparison_long <- comparison %>%
+  select(date, cpi_adjusted, cpi_official) %>%
+  pivot_longer(
+    cols = -date,
+    names_to = "series",
+    values_to = "cpi"
+  )
+
+ggplot(comparison_long,
+       aes(x = date, y = cpi, color = series)) +
+  geom_line(linewidth = 0.7) +
+  labs(
+    title = "Comparison of Seasonally Adjusted Canadian CPI",
+    x = "Year",
+    y = "CPI Index",
+    color = "Series"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# compare inflation rates
+comparison <- comparison %>%
+  arrange(date) %>%
+  mutate(
+    inflation_self =
+      1200 * (log(cpi_adjusted) -
+              log(lag(cpi_adjusted))),
+
+    inflation_official =
+      1200 * (log(cpi_official) -
+              log(lag(cpi_official)))
+  )
+
+ggplot(comparison, aes(x = date)) +
+  geom_line(
+    aes(y = inflation_self, color = "Self-adjusted")
+  ) +
+  geom_line(
+    aes(y = inflation_official, color = "Official")
+  ) +
+  labs(
+    title = "Monthly Inflation: Self-adjusted vs Official",
+    x = "Year",
+    y = "Annualised Inflation (%)",
+    color = "Series"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# quantitative analysis
+valid <- comparison %>%
+  filter(
+    !is.na(inflation_self),
+    !is.na(inflation_official)
+  )
+
+errors <- valid$inflation_self -
+          valid$inflation_official
+
+mae <- mean(abs(errors))
+rmse <- sqrt(mean(errors^2))
+bias <- mean(errors)
+
+correlation <- cor(
+  valid$inflation_self,
+  valid$inflation_official
+)
+
+data.frame(
+  MAE = mae,
+  RMSE = rmse,
+  Bias = bias,
+  Correlation = correlation
+)
+```
+
+## Fred Data
+
+```{r}
+# import fred-md
+fred_raw <- read_csv("data/raw/2026-rev-08-MD.csv",
+  col_types = cols(.default = col_character())
+)
+
+head(fred_raw)
+```
+
+```{r}
+# preserve transformation codes
+fred_transform <- fred_raw[1, ] 
+fred_transform
+```
+
+```{r}
+fred_md <- fred_raw %>%
+  slice(-1) %>%                     # remove transformation codes
+  rename(date = sasdate) %>%        # rename column to standardise
+  mutate(date = as.Date(date, format = "%m/%d/%Y")) %>%
+  filter(date >= as.Date("1981-01-01"))
+```
+
+```{r}
+dim(fred_md)
+names(fred_md)
+head(fred_md) 
+tail(fred_md)
+```
+
+## Constructing our target 
+
+** Need to decide which metric to use
+
+```{r}
+# constructing our variable - inflation 
+cpi_model <- cpi_adjusted %>%
+  transmute(
+    date,
+    cpi_sa = cpi_adjusted,
+    log_cpi = log(cpi_adjusted),
+    inflation_mom = 1200 *
+      (log_cpi - lag(log_cpi))
+  )
+
+# constructing three-month-ahead average inflation target 
+# ie. using January 2020 predictor information to forecast inflation from Jan-April 2020
+
+cpi_model <- cpi_model %>%
+  mutate(
+    target_h3 = 400 *
+      (lead(log_cpi, 3) - log_cpi)
+  )
+```
+
+## Time to merge
+
+Note: CPI model is using self-seasonally adjusted
+
+```{r}
+# All datasets must have a column named "date"
+can_md$date <- as.Date(can_md$date)
+fred_md$date <- as.Date(fred_md$date)
+cpi_model$date <- as.Date(cpi_model$date)
+
+# Check duplicate dates
+sum(duplicated(can_md$date))
+sum(duplicated(fred_md$date))
+sum(duplicated(cpi_model$date))
+
+# Check coverage
+range(can_md$date)
+range(cpi_model$date)
+range(fred_md$date)
+
+dim(can_md)
+dim(cpi_model)
+dim(fred_md)
+```
+
+### Main analysis: Canadian macroeconomic indicators + CPI `main_data`
+
+```{r}
+main_data <- can_md %>%
+  inner_join(
+    cpi_model,
+    by = "date"
+  ) %>%
+  arrange(date)
+
+dim(main_data)
+head(main_data)
+```
+
+### Secondary analysis: Fred data + Canadian macroeconomic indicators + CPI `extended_data`
+
+Note: should choose indicators that would be useful, and rename with "US" prefix to avoid confusion
+
+```{r}
+extended_data <- main_data %>%
+  left_join(
+    fred_md,
+    by = "date"
+  ) %>%
+  arrange(date)
+
+dim(extended_data)
+head(extended_data)
+```
+
+```{r}
+# save data 
+dir.create(
+  "data/processed",
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+saveRDS(
+  main_data,
+  "data/processed/main_data.rds"
+)
+
+saveRDS(
+  extended_data,
+  "data/processed/extended_data.rds"
+)
+```

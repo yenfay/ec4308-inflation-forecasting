@@ -1,0 +1,24 @@
+# EDA 
+
+```{r}
+# install packages, should only run once
+# install.packages(c("readr", "dplyr", "ggplot2", "tidyr", "lubridate"),
+#                  repos = "https://cloud.r-project.org")
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+```
+
+```{r}
+cpi_model %>%
+  summarise(
+    mean = mean(inflation_mom, na.rm = TRUE),
+    median = median(inflation_mom, na.rm = TRUE),
+    sd = sd(inflation_mom, na.rm = TRUE),
+    min = min(inflation_mom, na.rm = TRUE),
+    max = max(inflation_mom, na.rm = TRUE)
+  )
+```

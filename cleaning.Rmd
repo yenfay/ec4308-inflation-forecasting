@@ -377,60 +377,38 @@ head(cpi_adjusted)
 head(cpi_official)
 ```
 
-Columns: 
-- date
-- cpi
-- log_cpi
-- inflation_mom (historical monthly inflation)
-- inflation_12m 
-- target_h1 (1-month-ahead forecasting)
-- target_h3 (3-month-ahead forecasting)
-- target_h6 (6-month-ahead forecasting)
-- target_h12 (12-month-ahead forecasting)
-- accumulated_h3 (realised 3-month accumulated inflation)
-- accumulated_h6 (realised 6-month accumulated inflation)
-- accumulated_h12 (realised 12-month accumulated inflation)
-
 ```{r}
 construct_inflation <- function(data, cpi_col) {
-  data %>%
+  result <- data %>%
     arrange(date) %>%
     transmute(
       date,
       cpi = {{ cpi_col }},
       log_cpi = log(cpi),
 
-      # historical inflation
       inflation_mom = log_cpi - lag(log_cpi),
       inflation_12m = log_cpi - lag(log_cpi, 12)
-    ) %>%
-    mutate(
-      # future monthly inflation
-      target_h1 = lead(inflation_mom, 1),
-      target_h3 = lead(inflation_mom, 3),
-      target_h6 = lead(inflation_mom, 6),
-      target_h12 = lead(inflation_mom, 12),
+    )
 
-      # future accumulated inflation
+  # construct future monthly inflation targets (h = 1 to 12)
+  for (h in 1:12) {
+    result[[paste0("target_h", h)]] <-
+      dplyr::lead(result$inflation_mom, h)
+  }
+
+  # construct realised accumulated inflation
+  result <- result %>%
+    mutate(
       accumulated_h3 = lead(log_cpi, 3) - log_cpi,
       accumulated_h6 = lead(log_cpi, 6) - log_cpi,
       accumulated_h12 = lead(log_cpi, 12) - log_cpi
     )
+
+  return(result)
 }
 
-# self adjusted seasonality
 cpi_model_self <- construct_inflation(cpi_adjusted, cpi_adjusted)
-
-# officially adjusted
 cpi_model_official <- construct_inflation(cpi_official, cpi_official)
-
-for (h in 1:12) {
-  cpi_model_self[[paste0("target_h", h)]] <-
-    dplyr::lead(cpi_model_self$inflation_mom, h)
-
-  cpi_model_official[[paste0("target_h", h)]] <-
-    dplyr::lead(cpi_model_official$inflation_mom, h)
-}
 ```
 
 ```{r}
@@ -442,11 +420,22 @@ colSums(is.na(cpi_model_self))
 colSums(is.na(cpi_model_official))
 
 head(cpi_model_self, 3)
-tail(cpi_model_self, 3)
-
 head(cpi_model_official, 3)
-tail(cpi_model_official, 3)
 ```
+
+Explanation: 
+
+Our dependent variables: 
+- `target_h1` until `target_h12` 
+
+How to use in models: 
+- should not directly train main models using `accumulated_h3` h6 or h12
+- should aggregate monthly forecasts and then compare with `accumulated_h3`, 6, and 12 
+
+Other variables: 
+- `inflation_mom`: historical inflation
+- `inflation_12m`: historical inflation (12-month)
+- `accumulated_h3`, h6, and h12: realised accumulated inflation over the next 3, 6, and 12 months 
 
 ## Time to merge
 

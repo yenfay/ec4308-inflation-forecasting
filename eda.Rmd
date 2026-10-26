@@ -1,24 +1,216 @@
 # EDA 
 
+## Dataset Overview
+![alt text](image.png)
+
 ```{r}
 # install packages, should only run once
-# install.packages(c("readr", "dplyr", "ggplot2", "tidyr", "lubridate"),
-#                  repos = "https://cloud.r-project.org")
+# install.packages(c("readr", "dplyr", "ggplot2", "tidyr", "lubridate", "zoo"),
+#                   repos = "https://cloud.r-project.org")
 
 library(readr)
 library(dplyr)
 library(ggplot2)
 library(tidyr)
 library(lubridate)
+library(zoo)
 ```
 
 ```{r}
-cpi_model %>%
-  summarise(
-    mean = mean(inflation_mom, na.rm = TRUE),
-    median = median(inflation_mom, na.rm = TRUE),
-    sd = sd(inflation_mom, na.rm = TRUE),
-    min = min(inflation_mom, na.rm = TRUE),
-    max = max(inflation_mom, na.rm = TRUE)
+main_data_self <- readRDS("data/processed/main_data_self.rds")
+main_data_official <- readRDS("data/processed/main_data_official.rds")
+extended_data_self <- readRDS("data/processed/extended_data_self.rds")
+extended_data_official <- readRDS("data/processed/extended_data_official.rds")
+```
+
+```{r}
+datasets <- list(
+  main_data_self = main_data_self,
+  main_data_official = main_data_official,
+  extended_data_self = extended_data_self,
+  extended_data_official = extended_data_official
+)
+
+overview <- bind_rows(lapply(names(datasets), function(nm) {
+  df <- datasets[[nm]]
+
+  data.frame(
+    dataset = nm,
+    observations = nrow(df),
+    variables = ncol(df),
+    start = min(df$date),
+    end = max(df$date),
+    missing = sum(is.na(df))
   )
+}))
+
+print(overview)
+```
+
+```{r}
+missing_count <- colSums(is.na(extended_data_self))
+missing_count[missing_count > 0]
+```
+
+```{r}
+missing_count <- colSums(is.na(extended_data_official))
+missing_count[missing_count > 0]
+```
+
+```{r}
+print ("Row and Col positions of NA values")
+which(is.na(extended_data_official$US_ACOGNO), arr.ind=TRUE)
+
+print ("Row and Col positions of NA values")
+which(is.na(extended_data_self$US_ACOGNO), arr.ind=TRUE)
+```
+
+`US_ACOGNO` missing values are from 1981-01-01 to 1992-01-01. From 1992-02-01 onwards, there is data for `US_ACOGNO`, except for 2026-07-01. The disparity in missing values for official and self data is from this variable (difference = 132). 
+
+## Compare self-adjusted seasonality and officially adjusted main_data
+
+```{r}
+inflation_compare <- main_data_self %>%
+  select(date, inflation_self = inflation_mom) %>%
+  inner_join(
+    main_data_official %>%
+      select(date, inflation_official = inflation_mom),
+    by = "date"
+  ) %>%
+  filter(date <= cutoff)
+
+inflation_compare %>%
+  pivot_longer(
+    cols = -date,
+    names_to = "series",
+    values_to = "inflation"
+  ) %>%
+  ggplot(aes(date, inflation * 100, color = series)) +
+  geom_line(linewidth = 0.5, alpha = 0.8) +
+  labs(
+    title = "Canadian Monthly Inflation: Self vs Official",
+    x = "Year",
+    y = "Monthly Log Inflation (%)",
+    color = "CPI Adjustment"
+  ) +
+  theme_minimal()
+```
+
+## Descriptive statistics for inflation
+
+```{r}
+# descriptive statistics 
+inflation_stats <- inflation_compare %>%
+  pivot_longer(
+    cols = -date,
+    names_to = "series",
+    values_to = "inflation"
+  ) %>%
+  group_by(series) %>%
+  summarise(
+    mean = mean(inflation, na.rm = TRUE),
+    median = median(inflation, na.rm = TRUE),
+    sd = sd(inflation, na.rm = TRUE),
+    min = min(inflation, na.rm = TRUE),
+    max = max(inflation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(inflation_stats)
+```
+
+We plot autocorrelation and partial autocorrelation to examine our inflation variables. 
+
+```{r}
+# comparing across same time periods (starting from 1992)
+start_date <- as.Date("1992-01-01")
+end_date <- as.Date("2019-12-01")
+
+self_common <- main_data_self %>%
+  filter(date >= start_date, date <= end_date)
+
+official_common <- main_data_official %>%
+  filter(date >= start_date, date <= end_date)
+
+inflation_common <- main_data_self %>%
+  select(date, self = inflation_mom) %>%
+  inner_join(
+    main_data_official %>%
+      select(date, official = inflation_mom),
+    by = "date"
+  ) %>%
+  filter(
+    date <= end_date,
+    complete.cases(self, official)
+  )
+
+par(mfrow = c(2, 2))
+
+acf(inflation_common$self, lag.max = 36,
+    main = "ACF: Self-adjusted")
+
+pacf(inflation_common$self, lag.max = 36,
+     main = "PACF: Self-adjusted")
+
+acf(inflation_common$official, lag.max = 36,
+    main = "ACF: Official")
+
+pacf(inflation_common$official, lag.max = 36,
+     main = "PACF: Official")
+```
+
+Interpretation: 
+- similar autocorrelation structures between self-adjusted and official CPI 
+- both exhibit weak overall autocorrelation with a large negative correlation at lag 12 and a few isolated PACF spikes 
+- Implications
+  - supprts AR models, but AR(1) is not necessarily sufficient -- should use BIC or validation to choose best model, similar to Mederios et al. methodology 
+  - similarity strengthens our confidence in self-adjusted CPI 
+
+## Rolling volatility 
+Does inflation volatility change across economic periods? 
+
+```{r}
+volatility_self <- main_data_self %>%
+  arrange(date) %>%
+  mutate(
+    rolling_sd_12 = zoo::rollapply(
+      inflation_mom,
+      width = 12,
+      FUN = sd,
+      fill = NA,
+      align = "right"
+    )
+  )
+
+ggplot(volatility_self, aes(date, rolling_sd_12 * 100)) +
+  geom_line() +
+  labs(
+    title = "12-Month Rolling Volatility of Canadian Inflation (Self-adjusted CPI)",
+    x = "Year",
+    y = "Rolling SD (monthly percentage points)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+volatility_self <- main_data_official %>%
+  arrange(date) %>%
+  mutate(
+    rolling_sd_12 = zoo::rollapply(
+      inflation_mom,
+      width = 12,
+      FUN = sd,
+      fill = NA,
+      align = "right"
+    )
+  )
+
+ggplot(volatility_self, aes(date, rolling_sd_12 * 100)) +
+  geom_line() +
+  labs(
+    title = "12-Month Rolling Volatility of Canadian Inflation (Officially-adjusted CPI)",
+    x = "Year",
+    y = "Rolling SD (monthly percentage points)"
+  ) +
+  theme_minimal()
 ```

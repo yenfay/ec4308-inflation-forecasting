@@ -1,4 +1,4 @@
-# EDA and Data cleaning
+# Loading and cleaning the data
 
 Sources: 
 - Macroeconomic predictors: https://www.stevanovic.uqam.ca/DS_LCMD.html 
@@ -33,6 +33,22 @@ From `Table_can_md.xlsx` we can see that the following variables are discontinue
 - `CRED_MORT_discontinued`
 - `CRED_CONS_discontinued`
 - `CRED_BUS_discontinued` 
+
+## Keeping track of the variables
+
+- `can_md`: Macroeconomic data. 1981-01-01 to 2026-07-01 
+  - Note: variables have been prefixed with "CAN_" in case there are overlaps with FRED data
+- `cpi_model_self`: CPI (not officially seasonally adjusted, self adjusted using ARIMA). 1981-01-01 to 2026-07-01
+  - Note: variables have been prefixed with "US_" in case there are overlaps with CAN data
+- `cpi_model_official`: CPI (officially seasonally adjusted). 1992-01-01 to 2026-07-01 
+- `fred_md`: FRED data. 1981-01-01 to 2026-07-01 
+
+## Outputs (RDS)
+Outputs have merged the variables into the following
+- `main_data_self.rds = can_md + cpi_model_self`
+- `main_data_official.rds = can_md + cpi_model_official` 
+- `extended_data_self.rds = can_md + cpi_model_self + fred_md`
+- `extended_data_official.rds = can_md + cpi_model_official + fred_md`
 
 ```{r}
 # install packages, should only run once
@@ -102,11 +118,17 @@ sum(is.na(can_md))
 can_md <- can_md %>%
   rename(date = Date) %>%
   mutate(date = as.Date(date)) %>%
-  arrange(date)
+  arrange(date) %>% 
+  rename_with(
+    ~ paste0("CAN_", .x),
+    -date
+  )
 
 class(can_md$date)
 range(can_md$date)
 sum(duplicated(can_md$date))
+dim(can_md)
+names(can_md)
 ```
 
 ## CPI Data
@@ -114,12 +136,16 @@ Testing unseasonally adjusted data -> ARIMA adjustment -> compare against offici
 
 ```{r}
 # import canadian CPI data
-cpi_raw <- read_csv("data/raw/1810000401_databaseLoadingData.csv", show_col_types = FALSE)
-cpi_official_raw <- read_csv("data/raw/1810000601_databaseLoadingData.csv", show_col_types = FALSE)
+cpi_raw <- read_csv("data/raw/1810000401_databaseLoadingData.csv",
+                    show_col_types = FALSE)
+cpi_official_raw <- read_csv("data/raw/1810000601_databaseLoadingData.csv",
+                    show_col_types = FALSE)
 ```
 
 ```{r}
 # clean column headers
+head(cpi_raw)
+head(cpi_official_raw)
 cpi <- cpi_raw %>%
   transmute(
     date = as.Date(paste0(REF_DATE, "-01")),
@@ -133,12 +159,12 @@ cpi_official <- cpi_official_raw %>%
     cpi_official = as.numeric(VALUE)
   ) %>%
   arrange(date)
+
+head(cpi)
+head(cpi_official)
 ```
 
 ```{r}
-head(cpi)
-tail(cpi)
-
 range(cpi$date)
 range(cpi_official$date)
 
@@ -146,7 +172,7 @@ sum(duplicated(cpi$date))
 sum(duplicated(cpi_official$date))
 ```
 
-Since the data is not seasonally adjusted, we use `X-13ARIMA-SEATS` to seasonally adjust. 
+Since the data `cpi` is not seasonally adjusted, we use `X-13ARIMA-SEATS` to seasonally adjust. 
 
 ```{r}
 # check for regularly spaced time series
@@ -191,6 +217,7 @@ cpi_adjusted <- data.frame(
 ```
 
 ```{r}
+# we observe the performance of self adjusted CPI
 comparison <- cpi_adjusted %>%
   inner_join(cpi_official, by = "date")
 
@@ -300,78 +327,147 @@ fred_md <- fred_raw %>%
   slice(-1) %>%                     # remove transformation codes
   rename(date = sasdate) %>%        # rename column to standardise
   mutate(date = as.Date(date, format = "%m/%d/%Y")) %>%
-  filter(date >= as.Date("1981-01-01"))
+  filter(date >= as.Date("1981-01-01"))  %>% # filter for the dates we need
+  rename_with(
+    ~ paste0("US_", .x),
+    -date
+  )
 ```
 
 ```{r}
 dim(fred_md)
-names(fred_md)
-head(fred_md) 
+head(fred_md)
 tail(fred_md)
+```
+
+```{r}
+# check missing values
+missing_count <- colSums(is.na(fred_md))
+missing_count[missing_count > 0]
+sum(is.na(fred_md))
+
+# check duplicates 
+sum(duplicated(fred_md$date))
+range(fred_md$date)
 ```
 
 ## Constructing our target 
 
-** Need to decide which metric to use
+Metric following Mederios et al., who forecast: 
+1. Monthly inflation at future month+h (h=1,2,...,12)
+2. Accumulated inflation over next h months (h=3,6,12)
 
 ```{r}
-# constructing our variable - inflation 
-cpi_model <- cpi_adjusted %>%
-  transmute(
-    date,
-    cpi_sa = cpi_adjusted,
-    log_cpi = log(cpi_adjusted),
-    inflation_mom = 1200 *
-      (log_cpi - lag(log_cpi))
-  )
+head(cpi_adjusted)
+head(cpi_official)
+```
 
-# constructing three-month-ahead average inflation target 
-# ie. using January 2020 predictor information to forecast inflation from Jan-April 2020
+Columns: 
+- date
+- cpi
+- log_cpi
+- inflation_mom (historical monthly inflation)
+- inflation_12m 
+- target_h1 (1-month-ahead forecasting)
+- target_h3 (3-month-ahead forecasting)
+- target_h6 (6-month-ahead forecasting)
+- target_h12 (12-month-ahead forecasting)
+- accumulated_h3 (realised 3-month accumulated inflation)
+- accumulated_h6 (realised 6-month accumulated inflation)
+- accumulated_h12 (realised 12-month accumulated inflation)
 
-cpi_model <- cpi_model %>%
-  mutate(
-    target_h3 = 400 *
-      (lead(log_cpi, 3) - log_cpi)
-  )
+```{r}
+construct_inflation <- function(data, cpi_col) {
+  data %>%
+    arrange(date) %>%
+    transmute(
+      date,
+      cpi = {{ cpi_col }},
+      log_cpi = log(cpi),
+
+      # historical inflation
+      inflation_mom = log_cpi - lag(log_cpi),
+      inflation_12m = log_cpi - lag(log_cpi, 12)
+    ) %>%
+    mutate(
+      # future monthly inflation
+      target_h1 = lead(inflation_mom, 1),
+      target_h3 = lead(inflation_mom, 3),
+      target_h6 = lead(inflation_mom, 6),
+      target_h12 = lead(inflation_mom, 12),
+
+      # future accumulated inflation
+      accumulated_h3 = lead(log_cpi, 3) - log_cpi,
+      accumulated_h6 = lead(log_cpi, 6) - log_cpi,
+      accumulated_h12 = lead(log_cpi, 12) - log_cpi
+    )
+}
+
+# self adjusted seasonality
+cpi_model_self <- construct_inflation(cpi_adjusted, cpi_adjusted)
+
+# officially adjusted
+cpi_model_official <- construct_inflation(cpi_official, cpi_official)
+```
+
+```{r}
+# checks
+range(cpi_model_self$date)
+range(cpi_model_official$date)
+
+colSums(is.na(cpi_model_self))
+colSums(is.na(cpi_model_official))
+
+head(cpi_model_self, 3)
+tail(cpi_model_self, 3)
+
+head(cpi_model_official, 3)
+tail(cpi_model_official, 3)
 ```
 
 ## Time to merge
 
-Note: CPI model is using self-seasonally adjusted
-
 ```{r}
-# All datasets must have a column named "date"
-can_md$date <- as.Date(can_md$date)
-fred_md$date <- as.Date(fred_md$date)
-cpi_model$date <- as.Date(cpi_model$date)
-
-# Check duplicate dates
-sum(duplicated(can_md$date))
-sum(duplicated(fred_md$date))
-sum(duplicated(cpi_model$date))
-
-# Check coverage
+# check date ranges
 range(can_md$date)
-range(cpi_model$date)
 range(fred_md$date)
+range(cpi_model_self$date)
+range(cpi_model_official$date)
 
 dim(can_md)
-dim(cpi_model)
 dim(fred_md)
+dim(cpi_model_self)
+dim(cpi_model_official)
 ```
 
 ### Main analysis: Canadian macroeconomic indicators + CPI `main_data`
 
 ```{r}
-main_data <- can_md %>%
+# with self seasonally adjusted - cpi_model
+main_data_self <- can_md %>%
   inner_join(
-    cpi_model,
+    cpi_model_self,
     by = "date"
   ) %>%
   arrange(date)
 
-dim(main_data)
-head(main_data)
+dim(main_data_self)
+head(main_data_self)
+tail(main_data_self)
+```
+
+```{r}
+# with officially seasonally adjusted - cpi_official
+main_data_official <- can_md %>%
+  inner_join(
+    cpi_model_official,
+    by = "date"
+  ) %>%
+  arrange(date)
+
+dim(main_data_official)
+head(main_data_official)
+tail(main_data_official)
 ```
 
 ### Secondary analysis: Fred data + Canadian macroeconomic indicators + CPI `extended_data`
@@ -379,32 +475,46 @@ head(main_data)
 Note: should choose indicators that would be useful, and rename with "US" prefix to avoid confusion
 
 ```{r}
-extended_data <- main_data %>%
+# with self adjusted main_data
+extended_data_self <- main_data_self %>%
   left_join(
     fred_md,
     by = "date"
   ) %>%
   arrange(date)
 
-dim(extended_data)
-head(extended_data)
+dim(extended_data_self)
+head(extended_data_self)
+tail(extended_data_self)
 ```
 
 ```{r}
-# save data 
+# with officially adjusted main_data
+extended_data_official <- main_data_official %>%
+  left_join(
+    fred_md,
+    by = "date"
+  ) %>%
+  arrange(date)
+
+dim(extended_data_official)
+head(extended_data_official)
+tail(extended_data_official)
+```
+
+```{r}
+# save data
 dir.create(
   "data/processed",
   showWarnings = FALSE,
   recursive = TRUE
 )
 
-saveRDS(
-  main_data,
-  "data/processed/main_data.rds"
-)
+# main data
+saveRDS(main_data_self, "data/processed/main_data_self.rds")
+saveRDS(main_data_official, "data/processed/main_data_official.rds")
 
-saveRDS(
-  extended_data,
-  "data/processed/extended_data.rds"
-)
+# secondary data
+saveRDS(extended_data_self, "data/processed/extended_data_self.rds")
+saveRDS(extended_data_official, "data/processed/extended_data_official.rds")
 ```

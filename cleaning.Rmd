@@ -28,11 +28,11 @@ Fortin-Gagnon, Leroux, Stevanovic and Surprenant (2018) A Large Canadian Data fo
 We use `balanced_can_md.xlsx` as the data is already stationary and balanced panel. 
 
 From `Table_can_md.xlsx` we can see that the following variables are discontinued and ends in September 2020. we should remove these from the data source 
-- `CRED_T-discontinued`
-- `CRED_HOURS_discontinued`
+- `CRED_T_discontinued`
+- `CRED_HOUS_discontinued`
 - `CRED_MORT_discontinued`
 - `CRED_CONS_discontinued`
-- `CRED_BUS_discontinued` 
+- `CRE_BUS_discontinued` 
 
 ## Keeping track of the variables
 
@@ -172,7 +172,7 @@ sum(duplicated(cpi$date))
 sum(duplicated(cpi_official$date))
 ```
 
-Since the data `cpi` is not seasonally adjusted, we use `X-13ARIMA-SEATS` to seasonally adjust. 
+Since the data CPI is not seasonally adjusted, we use X-13ARIMA-SEATS using the X-11 seasonal-adjustment procedure to seasonally adjust. 
 
 ```{r}
 # check for regularly spaced time series
@@ -306,39 +306,7 @@ data.frame(
 ```
 
 ## Fred Data
-
-```{r}
-# import fred-md
-fred_raw <- read_csv("data/raw/2026-rev-08-MD.csv",
-  col_types = cols(.default = col_character())
-)
-
-head(fred_raw)
-```
-
-```{r}
-# preserve transformation codes
-fred_transform <- fred_raw[1, ] 
-fred_transform
-```
-
-```{r}
-fred_md <- fred_raw %>%
-  slice(-1) %>%                     # remove transformation codes
-  rename(date = sasdate) %>%        # rename column to standardise
-  mutate(date = as.Date(date, format = "%m/%d/%Y")) %>%
-  filter(date >= as.Date("1981-01-01"))  %>% # filter for the dates we need
-  rename_with(
-    ~ paste0("US_", .x),
-    -date
-  )
-```
-
-```{r}
-dim(fred_md)
-head(fred_md)
-tail(fred_md)
-```
+This package https://cloud.r-project.org is explicitly provided by the source page. 
 
 ```{r}
 # check missing values
@@ -350,6 +318,53 @@ sum(is.na(fred_md))
 sum(duplicated(fred_md$date))
 range(fred_md$date)
 ```
+
+## Load and transform fred_md using provided R package
+
+```{r}
+# install.packages(c("devtools", "readr", "pracma"),
+#                  repos = "https://cloud.r-project.org")
+
+# devtools::install_github("cykbennie/fbi")
+library(fbi)
+```
+
+```{r}
+fred_md <- fbi::fredmd( 
+  file = "data/raw/2026-rev-08-MD.csv", # load directly using the package 
+  date_start = as.Date("1981-01-01"),
+  transform = TRUE
+) 
+
+# Inspect the transformed dataset
+dim(fred_md)
+names(fred_md)
+head(fred_md)
+tail(fred_md)
+```
+
+```{r}
+class(fred_md) <- "data.frame"
+fred_md <- fred_md %>% 
+  arrange(date) %>% 
+  rename_with(
+    ~ paste0("US_", .x),
+    -date
+  )
+
+head(fred_md, 3)
+```
+
+Note: can use `describe_md` to describe variables. see example below: 
+
+```{r}
+
+fbi::describe_md(
+  c("INDPRO", "OILPRICEx", "EXCAUSx"),
+  name.only = FALSE
+)
+```
+
 
 ## Constructing our target 
 
@@ -408,6 +423,14 @@ cpi_model_self <- construct_inflation(cpi_adjusted, cpi_adjusted)
 
 # officially adjusted
 cpi_model_official <- construct_inflation(cpi_official, cpi_official)
+
+for (h in 1:12) {
+  cpi_model_self[[paste0("target_h", h)]] <-
+    dplyr::lead(cpi_model_self$inflation_mom, h)
+
+  cpi_model_official[[paste0("target_h", h)]] <-
+    dplyr::lead(cpi_model_official$inflation_mom, h)
+}
 ```
 
 ```{r}

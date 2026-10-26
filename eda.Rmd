@@ -1,7 +1,6 @@
 # EDA 
 
 ## Dataset Overview
-![alt text](image.png)
 
 ```{r}
 # install packages, should only run once
@@ -48,6 +47,17 @@ print(overview)
 ```
 
 ```{r}
+data.frame(
+  dataset = c("Main", "Extended"),
+  predictors = c(
+    sum(startsWith(names(main_data_self), "CAN_")),
+    sum(startsWith(names(extended_data_self), "CAN_")) +
+      sum(startsWith(names(extended_data_self), "US_"))
+  )
+)
+```
+
+```{r}
 missing_count <- colSums(is.na(extended_data_self))
 missing_count[missing_count > 0]
 ```
@@ -58,14 +68,46 @@ missing_count[missing_count > 0]
 ```
 
 ```{r}
-print ("Row and Col positions of NA values")
-which(is.na(extended_data_official$US_ACOGNO), arr.ind=TRUE)
+extended_data_official %>%
+  filter(is.na(US_ACOGNO)) %>%
+  select(date, US_ACOGNO)
 
-print ("Row and Col positions of NA values")
-which(is.na(extended_data_self$US_ACOGNO), arr.ind=TRUE)
+extended_data_self %>%
+  filter(is.na(US_ACOGNO)) %>%
+  select(date, US_ACOGNO)
 ```
 
 `US_ACOGNO` missing values are from 1981-01-01 to 1992-01-01. From 1992-02-01 onwards, there is data for `US_ACOGNO`, except for 2026-07-01. The disparity in missing values for official and self data is from this variable (difference = 132). 
+
+```{r}
+missing_by_month <- extended_data_official %>%
+  select(date, starts_with("US_")) %>%
+  mutate(
+    missing_count = rowSums(
+      is.na(across(starts_with("US_")))
+    )
+  ) %>%
+  select(date, missing_count) %>%
+  filter(missing_count > 0) %>%
+  arrange(desc(missing_count))
+
+print(missing_by_month, n = Inf)
+```
+
+```{r}
+missing_by_month <- extended_data_self %>%
+  select(date, starts_with("US_")) %>%
+  mutate(
+    missing_count = rowSums(
+      is.na(across(starts_with("US_")))
+    )
+  ) %>%
+  select(date, missing_count) %>%
+  filter(missing_count > 0) %>%
+  arrange(desc(missing_count))
+
+print(missing_by_month, n = Inf)
+```
 
 ## Compare self-adjusted seasonality and officially adjusted main_data
 
@@ -76,8 +118,7 @@ inflation_compare <- main_data_self %>%
     main_data_official %>%
       select(date, inflation_official = inflation_mom),
     by = "date"
-  ) %>%
-  filter(date <= cutoff)
+  )
 
 inflation_compare %>%
   pivot_longer(
@@ -193,7 +234,7 @@ ggplot(volatility_self, aes(date, rolling_sd_12 * 100)) +
 ```
 
 ```{r}
-volatility_self <- main_data_official %>%
+volatility_official <- main_data_official %>%
   arrange(date) %>%
   mutate(
     rolling_sd_12 = zoo::rollapply(
@@ -205,7 +246,7 @@ volatility_self <- main_data_official %>%
     )
   )
 
-ggplot(volatility_self, aes(date, rolling_sd_12 * 100)) +
+ggplot(volatility_official, aes(date, rolling_sd_12 * 100)) +
   geom_line() +
   labs(
     title = "12-Month Rolling Volatility of Canadian Inflation (Officially-adjusted CPI)",

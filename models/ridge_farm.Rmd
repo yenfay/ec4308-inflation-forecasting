@@ -1,0 +1,681 @@
+---
+title: "Ridge & FARM Models"
+output: html_document
+---
+
+# For Alignment
+
+**Data**
+
+- **Files**:
+  - `main_data_official.rds` (primary) and `main_data_self.rds` (robustness: longer period), both ending **2026-07**.
+  - **Official SA**: 1992-02 → 2026-07 (414 months with inflation).
+  - **Self SA**: 1981-02 → 2026-07 (546 months).
+- **Target**: monthly inflation $\pi_t = \Delta \log CPI_t$ (`inflation_mom`), following Medeiros. One direct model per horizon h = 1, …, 12.
+- **Predictors**:
+  - all Canadian series (`CAN_*`) plus inflation itself, each with 4 lags (t, …, t−3).
+  - Excluded: CPI levels, `inflation_12m`, all `target_h*` and `accumulated_h*` columns.
+  - No outlier dummy (Canada has no single dominant outlier: official 2020-03 z = −4.4 vs 1994-02 −3.7; self 2020-03 and 2020-04 tied at −3.5).
+
+**Sample splits**
+
+- **Rolling window: 240 months.** The forecast of target month T at horizon h uses data from T − 240 to T − h (the origin). Earlier data are never used for a test forecast.
+- **Test set (same for every h and model):**
+  - official SA: 2012-02 → 2026-07 (174)
+  - self SA: 2001-02 → 2026-07 (306).
+- **Tuning (re-validated once a year):**
+  - every 12 months of the test period (official: 2012-02, 2013-02, …, 2026-02, 15 times; self: 26 times), λ (and K for FARM) are re-chosen by recursive validation on the **latest 50 months whose outcomes are known at the forecast origin, then held until the next re-validation**.
+    - Re-validating once every month is too costly in terms of computational time.
+  - The models are still re-estimated every month on their rolling 240-month window; only λ and K are updated yearly.
+  - This revalidates the penalty parameters from time to time as new data arrive, in the spirit of Medeiros, who re-selects λ in every window (by BIC: computationally cheap). `RETUNE_EVERY` sets the frequency (12 = yearly, the main specification; 1 = every step).
+- **Validation Set:** the latest **50 months** at each re-validation. The tables below show the first one; each later revalidation is 12 months further on.
+
+**Train → validate → test, by horizon h** (dates inclusive). The training set fits the first validation forecast; each later validation forecast also uses the validation months already passed. Each test forecast uses a rolling 240-month window, with λ and K re-validated once a year on the latest 50 months.
+
+**Official (primary)**
+
+| h   | Training set      | Validation set    | Obs | Test set          | Forecasts |
+|------------|------------|------------|------------|------------|------------|
+| 1   | 1992-02 → 2007-11 | 2007-12 → 2012-01 | 50  | 2012-02 → 2026-07 | 174       |
+| 2   | 1992-02 → 2007-09 | 2007-11 → 2011-12 | 50  | 2012-02 → 2026-07 | 174       |
+| 3   | 1992-02 → 2007-07 | 2007-10 → 2011-11 | 50  | 2012-02 → 2026-07 | 174       |
+| 4   | 1992-02 → 2007-05 | 2007-09 → 2011-10 | 50  | 2012-02 → 2026-07 | 174       |
+| 5   | 1992-02 → 2007-03 | 2007-08 → 2011-09 | 50  | 2012-02 → 2026-07 | 174       |
+| 6   | 1992-02 → 2007-01 | 2007-07 → 2011-08 | 50  | 2012-02 → 2026-07 | 174       |
+| 7   | 1992-02 → 2006-11 | 2007-06 → 2011-07 | 50  | 2012-02 → 2026-07 | 174       |
+| 8   | 1992-02 → 2006-09 | 2007-05 → 2011-06 | 50  | 2012-02 → 2026-07 | 174       |
+| 9   | 1992-02 → 2006-07 | 2007-04 → 2011-05 | 50  | 2012-02 → 2026-07 | 174       |
+| 10  | 1992-02 → 2006-05 | 2007-03 → 2011-04 | 50  | 2012-02 → 2026-07 | 174       |
+| 11  | 1992-02 → 2006-03 | 2007-02 → 2011-03 | 50  | 2012-02 → 2026-07 | 174       |
+| 12  | 1992-02 → 2006-01 | 2007-01 → 2011-02 | 50  | 2012-02 → 2026-07 | 174       |
+
+**Self-adjusted (robustness: longer period)**
+
+| h   | Training set      | Validation set    | Obs | Test set          | Forecasts |
+|------------|------------|------------|------------|------------|------------|
+| 1   | 1981-02 → 1996-11 | 1996-12 → 2001-01 | 50  | 2001-02 → 2026-07 | 306       |
+| 2   | 1981-02 → 1996-09 | 1996-11 → 2000-12 | 50  | 2001-02 → 2026-07 | 306       |
+| 3   | 1981-02 → 1996-07 | 1996-10 → 2000-11 | 50  | 2001-02 → 2026-07 | 306       |
+| 4   | 1981-02 → 1996-05 | 1996-09 → 2000-10 | 50  | 2001-02 → 2026-07 | 306       |
+| 5   | 1981-02 → 1996-03 | 1996-08 → 2000-09 | 50  | 2001-02 → 2026-07 | 306       |
+| 6   | 1981-02 → 1996-01 | 1996-07 → 2000-08 | 50  | 2001-02 → 2026-07 | 306       |
+| 7   | 1981-02 → 1995-11 | 1996-06 → 2000-07 | 50  | 2001-02 → 2026-07 | 306       |
+| 8   | 1981-02 → 1995-09 | 1996-05 → 2000-06 | 50  | 2001-02 → 2026-07 | 306       |
+| 9   | 1981-02 → 1995-07 | 1996-04 → 2000-05 | 50  | 2001-02 → 2026-07 | 306       |
+| 10  | 1981-02 → 1995-05 | 1996-03 → 2000-04 | 50  | 2001-02 → 2026-07 | 306       |
+| 11  | 1981-02 → 1995-03 | 1996-02 → 2000-03 | 50  | 2001-02 → 2026-07 | 306       |
+| 12  | 1981-02 → 1995-01 | 1996-01 → 2000-02 | 50  | 2001-02 → 2026-07 | 306       |
+
+The "Alignment check" chunk below prints these tables from the actual data files, so the group can confirm they match.
+
+**Parameter grids**
+
+| Parameter | Model | Values considered | Chosen by |
+|------------------|------------------|-------------------|------------------|
+| λ (L2) | Ridge | 100 log-spaced values from 10² λ_max down to 10⁻⁶ λ_max (solved exactly, see below) | Recursive validation (50 months), per horizon |
+| λ (L1) | FARM sparse step | 100 log-spaced values from λ_max down to 10⁻² λ_max (glmnet's default range), one grid per K | Jointly with K, recursive validation (50 months), per horizon |
+| K (factors) | FARM | 1, 2, …, K_max, with K_max set from the training-set scree plot (see below) | Jointly with λ, same validation, per horizon |
+
+- **Fixed, not tuned:**
+  - 4 lags - both models
+  - 4 PCs added to only ridge (Medeiros), 240-month window.
+- **Why log-spaced and relative to λ_max:**
+  - penalties matter multiplicatively (0.001 vs 0.01 is as big a step as 0.1 vs 1), so log spacing covers several orders of magnitude evenly
+  - glmnet's own default path is log-spaced for the same reason. λ_max depends on the data's scale, so each grid is anchored to it:
+    - for LASSO it is the smallest penalty that selects nothing (no point going higher)
+    - for ridge it is glmnet's largest default penalty.
+- **λ_max is recomputed in every window:** a candidate is a fixed fraction of the window's own λ_max (e.g. 0.05 × λ_max), which is how glmnet's default path is defined too. A candidate therefore means the same amount of shrinkage in every window, so its errors can be averaged over the 50 validation months and compared across the whole test period, even as the data's scale changes over the years.
+- **Why these ranges:** the ridge grid runs from 100 × λ_max (in-sample R² ≈ 0, i.e. the mean forecast) to 10⁻⁶ λ_max (in-sample R² ≈ 1, i.e. interpolation), so it covers every meaningful amount of shrinkage; glmnet's default would stop at 0.01 λ_max (in-sample R² ≈ 0.6). The LASSO grid uses glmnet's default range: at 0.01 λ_max the LASSO already selects about as many variables as there are observations (saturated), and below that its solutions are numerically unstable.
+- **Winner = lowest average validation MSE.** No 1-standard-error rule (not in Medeiros, not in the lecture's recursive procedure, and rarely helpful for macro forecasting).
+- The post-run diagnostics show the chosen K and λ over the test period and how often they sit at the edge of the grid.
+
+**Evaluation and handoff**
+
+- MSE for h = 1, …, 12 and for accumulated 3/6/12-month inflation (sum of the monthly forecasts from one origin). The AR benchmark, and MSE relative to it, come from the benchmark owner / forecast combination.
+- Export (for GitHub, in `results/forecasts/`):
+  - one long CSV per sample, `forecasts_ridge_farm_<sample>.csv` (main: re-validated yearly), with columns `sample, model, h, origin_date, target_date, forecast, actual`; dates as YYYY-MM-DD; values in monthly log inflation (× 100 = %).
+  - `tuning_path_ridge_farm.csv` has the chosen K and λ at every test forecast. The `.rds` files in `results/` are working files and do not need to be committed.
+
+**No look-ahead**
+
+1.  Every forecast, validation or test, uses only data up to its own origin (`train_rows()`): standardisation, PCA, factors, OLS and LASSO/ridge are all re-estimated from that data alone.
+2.  At each forecast origin, tuning only uses validation months up to that origin (their outcomes are known by then), and each validation forecast was itself made from data up to its own origin.
+3.  λ_max, the top of each λ grid, comes from each window's own training data.
+
+## Specification and deviations from Medeiros
+
+| Item | Medeiros | Here | Why |
+|------------------|------------------|------------------|------------------|
+| Ridge λ | n/a | Recursive validation | Information criteria need degrees of freedom; `ic.glmnet` counts non-zero coefficients, which never changes for ridge, so BIC always picks the smallest λ |
+| LASSO λ in FARM | BIC | Recursive validation | BIC saturated on official data (\~238 variables selected with \~236 observations); Fan, Lou & Yu also use cross-validation |
+| Number of factors | Fixed at 4 | Recursive validation (jointly with λ) over 1, …, K_max | Chosen by forecast performance, as for PCR in the lecture; K_max is set from the training-set scree plot |
+| Tuning frequency | Every window (BIC) | Once a year, by recursive validation on the latest 50 months | Parameters are revalidated from time to time as new data arrive (as suggested in class); yearly keeps the choices stable and easy to explain. |
+| Ridge solver | glmnet | Exact closed form (SVD), same objective and λ scale as glmnet | glmnet's default convergence tolerance is inaccurate for ridge at small λ with more predictors than observations (the lecture's ridge code tightens it with `thresh = 1e-12` for this reason); the closed form is exact at every λ and fast |
+| Factor type | Standard PCs (also target and boosted factors) | Standard PCs | Medeiros et al. (2019, Section 1.1) find that "replacing standard principal component factors with target factors, as advocated by Bai and Ng (2008), or using boosting to select factors as in Bai and Ng (2009) improves the results only marginally" |
+| Window | 360 / 492 months | 240 months | Shorter Canadian sample |
+| Outlier dummy | US, Nov 2008 | None | No single dominant Canadian outlier |
+
+**FARM (Factor-Augmented Sparse Linear Regression).**
+
+Model: $x_t = B f_t + u_t$, $\;\pi_{t+h} = f_t'\gamma + u_t'\beta + \varepsilon_{t+h}$, where $x_t$ stacks 4 lags of all predictors.
+
+For each forecast:
+
+(1) standardise the lagged predictors with the training data's means and SDs
+
+(2) estimate K factors by PCA
+
+(3) idiosyncratic parts $\hat u_t = x_t - \hat B \hat f_t$;
+
+(4) dense step: OLS of future inflation on the factors (PCR)
+
+(5) sparse step: LASSO of the residuals on $\hat u_t$
+
+(6) forecast $\hat\pi_{t+h} = \hat f_t'\hat\gamma + \hat u_t'\hat\beta$.
+
+***Intuition**:* FARM is somewhat like a single-stage boosting of PCR with a learning rate of 1. What separates it from boosting is that the fit on the residuals uses the idiosyncratic components $u_t$ (the predictors with their factor contribution $B f_t$ stripped away) rather than the original $x_t$. As $\hat u_t$ is orthogonal to $\hat f_t$, the two steps are exactly equivalent to estimating the factor and idiosyncratic coefficients jointly, with the LASSO penalty applied only to the idiosyncratic part. FARM therefore nests pure factor regression ($\beta = 0$) and pure sparse regression, and its LASSO works on near-uncorrelated components, so variable selection is more stable than plain LASSO's.
+
+***Why plain principal components:*** Medeiros et al. (2019) reported that replacing standard principal component factors with target factors (Bai & Ng, 2008), or using boosting to select factors (Bai & Ng, 2009), improves the results only marginally, so the simpler standard PCA is used.
+
+**Choosing K_max (once per data set, before the full run):** run the chunks up to "Scree plots on the training set", look at the scree and cumulative-variance plots, set `FARM_K_MAX` in the "Set K_max" chunk right below them, then carry on running the chunks in order. The plot uses only the training set common to every horizon (official 1992-02 → 2006-01; self 1981-02 → 1995-01) and the same stacked 4-lag predictor matrix FARM uses, so no validation or test data are involved. One plot per data set is enough: the predictors are the same at every horizon. Set K_max where extra components add little variance, but keep it well below the training sample size (≈ 20 at most), because FARM's dense step is OLS on the K factors. The diagnostics show how often the chosen K hits K_max; if it does often, raise K_max.
+
+**Runtime:** roughly 3–4.5 hours in total with K_max = 10 (both samples), because every candidate (every λ, and every K for FARM) is forecast in every month. FARM's time grows in proportion to K_max; `RETUNE_EVERY` does not change the runtime. Run the h = 1 test first and multiply its time by 12.
+
+# Code
+
+## Settings
+
+```{r setup}
+library(dplyr)
+library(glmnet)
+library(lubridate)
+library(here)
+
+# ===== Alignment settings  =====
+WINDOW        <- 240     # rolling window (months)
+HORIZONS      <- 1:12    # direct models, one per horizon
+#HORIZONS    <- 1       # TEST: uncomment for a quick h = 1 run
+N_LAGS        <- 4       # lags of every series (Medeiros)
+N_VAL         <- 50      # validation months (the latest 50 with known outcomes)
+RETUNE_EVERY  <- 12      # re-validate every 12 test months (main: yearly); 1 = every step
+SAMPLES       <- c(official = "main_data_official.rds", self = "main_data_self.rds")
+
+# ===== Parameter grids =====
+RIDGE_N_LAMBDA <- 100;  RIDGE_RANGE <- c(1e2, 1e-6)   # ridge: 100 x lambda_max down to 1e-6 x lambda_max (each window's own)
+LASSO_N_LAMBDA <- 100;  LASSO_RANGE <- c(1,   1e-2)   # FARM:  lambda_max (nothing selected) down to 1e-2 x (glmnet default; each window's own)
+log_grid <- function(lmax, range, n) exp(seq(log(lmax * range[1]), log(lmax * range[2]), length.out = n))
+# FARM's K grid (1, ..., K_max) is set in the "Set K_max" chunk, after the scree plots
+N_PC           <- 4      # PCs added to ridge (fixed, Medeiros)
+
+# ===== Run control =====
+MODELS_TO_RUN <- c("ridge", "farm")
+MODELS_TO_RUN <- character(0) # just load saved results
+RUN_TAG       <- "main"                    # label for result files
+RUN_US_EXT    <- TRUE                 # TRUE = also run the US extension
+
+dir.create(here("results", "forecasts"), recursive = TRUE, showWarnings = FALSE)
+out_file <- function(sample, model, tag = RUN_TAG) {
+  here("results", paste0(model, "_", sample, "_", tag, ".rds"))
+}
+fmt <- function(d) format(d, "%Y-%m")
+```
+
+## Data
+
+Column 1 = inflation, then predictors selected by name (`CAN_*`, plus any requested `US_*`), so excluded columns never enter. US series can have gaps at the end of the sample; these are filled with the last available value (past data only), and any series still missing at the start is dropped.
+
+```{r data}
+fill_forward <- function(x) {                      # carry the last observed value forward
+  for (i in seq_along(x)[-1]) if (is.na(x[i])) x[i] <- x[i - 1]
+  x
+}
+
+load_sample <- function(file, us_vars = NULL) {
+  df <- readRDS(here("data", "processed", file)) %>% arrange(date)
+  df <- df[!is.na(df$inflation_mom), ]             # first month has no inflation yet
+
+  can    <- grep("^CAN_", names(df), value = TRUE)
+  us_all <- grep("^US_",  names(df), value = TRUE)
+  us     <- if (identical(us_vars, "all")) us_all else intersect(us_vars, us_all)
+  missing_us <- setdiff(us_vars, c("all", us_all))
+  if (length(missing_us)) warning("US series not found: ", paste(missing_us, collapse = ", "))
+
+  Y     <- cbind(inflation = df$inflation_mom, as.matrix(df[, c(can, us)]))
+  dates <- df$date
+
+  Y[, -1] <- apply(Y[, -1, drop = FALSE], 2, fill_forward)
+  bad <- colSums(is.na(Y)) > 0
+  if (any(bad)) message("Dropped (missing values): ", paste(colnames(Y)[bad], collapse = ", "))
+  Y <- Y[, !bad, drop = FALSE]
+  stopifnot(nrow(Y) > WINDOW + 1)
+
+  nprev <- nrow(Y) - WINDOW                         # test targets: every month after the first window
+  cat(file, "|", fmt(dates[1]), "to", fmt(tail(dates, 1)), "|", ncol(Y) - 1,
+      "predictor series | test:", nprev, "targets,", fmt(dates[WINDOW + 1]), "to",
+      fmt(tail(dates, 1)), "\n")
+  list(Y = Y, dates = dates, nprev = nprev)
+}
+```
+
+## Timing
+
+`train_rows(t, h)`: the data rows available when forecasting target row `t` at horizon `h`, i.e. the 240 months before `t` minus the last h − 1 (so the data end at the origin t − h). Fewer rows only for the early validation forecasts, where the sample has not yet built up 240 months.
+
+```{r timing}
+train_rows <- function(t, h) max(1, t - WINDOW):(t - h)
+
+alignment_table <- function(s) {
+  span <- function(r) paste(fmt(s$dates[min(r)]), "->", fmt(s$dates[max(r)]))
+  T1 <- WINDOW + 1; T2 <- WINDOW + s$nprev             # first and last test target
+  do.call(rbind, lapply(1:12, function(h) {
+    O  <- T1 - h                                        # origin of the first test forecast
+    v1 <- O - N_VAL + 1                                 # first validation target
+    tr <- train_rows(v1, h)                             # training set = data for the first validation forecast
+    data.frame(h = h,
+               training_set   = span(tr),
+               validation_set = span(v1:O),
+               val_obs        = N_VAL,
+               test_set       = span(T1:T2),
+               test_obs       = T2 - T1 + 1)
+  }))
+}
+```
+
+### Alignment check
+
+Prints the training / validation / test tables from the actual data files. They should match the alignment sheet at the top.
+
+```{r alignment}
+for (nm in names(SAMPLES)) {
+  cat("\n=====", nm, "=====\n")
+  print(alignment_table(load_sample(SAMPLES[[nm]])), row.names = FALSE)
+}
+```
+
+## Model building blocks
+
+`design()` turns a training data set (ending at the origin) into regression pairs: inflation at t on predictors dated t − h, …, t − h − 3, plus the forecast inputs dated origin, …, origin − 3. For one training window, `ridge_candidates()` and `farm_candidates()` return the forecast of every candidate: every λ for ridge, every K × λ for FARM, with λ as fractions of that window's own λ_max.
+
+```{r models}
+# glmnet's lambda_max for LASSO (the smallest penalty that selects nothing); glmnet's ridge
+# lambda_max is this divided by 1e-3. Same formula as glmnet (checked), computed directly.
+lambda_max <- function(X, y) {
+  ok <- apply(X, 2, sd) > 0; X <- X[, ok, drop = FALSE]
+  mu <- colMeans(X); sx <- sqrt(colMeans(sweep(X, 2, mu)^2))
+  max(abs(crossprod(sweep(X, 2, mu), y - mean(y))[, 1]) / sx) / nrow(X)
+}
+
+design <- function(Ysub, h, n_pc = 0) {
+  if (n_pc > 0) {                                   # PCs from this training data only
+    ok   <- apply(Ysub, 2, sd) > 0
+    Ysub <- cbind(Ysub, prcomp(Ysub[, ok], center = TRUE, scale. = TRUE, rank. = n_pc)$x)
+  }
+  aux <- embed(Ysub, N_LAGS + h)                    # row: [Y_t, Y_t-1, ..., Y_t-(N_LAGS+h-1)]
+  X   <- aux[, -(1:(ncol(Ysub) * h)), drop = FALSE] # predictors dated t-h, ..., t-h-3
+  list(y = aux[, 1], X = X, x_out = tail(aux, 1)[1:ncol(X)])
+}
+
+# ---- Ridge: 4 lags of everything + 4 PCs ----
+ridge_inputs <- function(Ysub, h) design(Ysub, h, n_pc = N_PC)
+ridge_preds  <- function(d, grid) {                 # one forecast per lambda in the grid
+  # Exact ridge, same objective and lambda scale as glmnet(alpha = 0): predictors standardised with
+  # the training data's means and (1/n) SDs, penalty n * lambda / sd(y). Solved by SVD for all
+  # lambdas at once (glmnet's iterative solver is inaccurate at small lambda when p > n).
+  ok <- apply(d$X, 2, sd) > 0
+  X  <- d$X[, ok, drop = FALSE]; n <- nrow(X)
+  mu <- colMeans(X); sx <- sqrt(colMeans(sweep(X, 2, mu)^2))
+  Z  <- sweep(sweep(X, 2, mu), 2, sx, "/")
+  ym <- mean(d$y); yc <- d$y - ym; sy <- sqrt(mean(yc^2))
+  sv  <- svd(Z)
+  uty <- as.numeric(crossprod(sv$u, yc))
+  zv  <- as.numeric(((d$x_out[ok] - mu) / sx) %*% sv$v)
+  vapply(grid, function(l) ym + sum(zv * sv$d / (sv$d^2 + n * l / sy) * uty), numeric(1))
+}
+
+# ---- FARM ----
+farm_inputs <- function(Ysub, h) {                  # standardise + PCA, this training data only
+  d     <- design(Ysub, h)
+  ok    <- apply(d$X, 2, sd) > 0
+  X     <- d$X[, ok, drop = FALSE]
+  mu    <- colMeans(X); s <- apply(X, 2, sd)
+  Z     <- scale(X, mu, s)
+  z_out <- matrix((d$x_out[ok] - mu) / s, nrow = 1)
+  list(y = d$y, Z = Z, z_out = z_out, pc = prcomp(Z, center = FALSE, rank. = max(FARM_K_GRID)))
+}
+
+farm_split <- function(fi, K) {                     # factors, idiosyncratic parts, dense step
+  L     <- fi$pc$rotation[, 1:K, drop = FALSE]
+  Fh    <- fi$Z %*% L
+  f_out <- fi$z_out %*% L
+  ols   <- lm(fi$y ~ Fh)
+  list(K     = K,
+       U     = fi$Z - Fh %*% t(L),
+       u_out = fi$z_out - f_out %*% t(L),
+       r     = resid(ols),
+       dense = sum(c(1, f_out) * coef(ols)))
+}
+
+farm_preds <- function(sp, grid, df = FALSE) {      # forecasts (and # selected) per lambda
+  fit <- glmnet(sp$U, sp$r, alpha = 1, lambda = grid)
+  out <- list(pred = sp$dense + as.numeric(predict(fit, newx = sp$u_out, s = grid)))
+  if (df) out$df <- colSums(as.matrix(coef(fit, s = grid))[-1, , drop = FALSE] != 0)
+  out
+}
+
+# ---- All candidates for one training window ----
+ridge_candidates <- function(Ysub, h) {             # one forecast per lambda
+  d <- ridge_inputs(Ysub, h)
+  list(pred = ridge_preds(d, log_grid(lambda_max(d$X, d$y) / 1e-3, RIDGE_RANGE, RIDGE_N_LAMBDA)))
+}
+
+farm_candidates <- function(Ysub, h) {              # one forecast per K x lambda (K-major order)
+  fi  <- farm_inputs(Ysub, h)
+  out <- lapply(FARM_K_GRID, function(K) {
+    sp <- farm_split(fi, K)
+    farm_preds(sp, log_grid(lambda_max(sp$U, sp$r), LASSO_RANGE, LASSO_N_LAMBDA), df = TRUE)
+  })
+  list(pred = unlist(lapply(out, `[[`, "pred")),    # LASSO forecasts per K, then next K
+       nsel = unlist(lapply(out, `[[`, "df")))      # number of idiosyncratic series selected
+}
+```
+
+## Tuning (recursive validation, re-done yearly)
+
+Recursive cross-validation procedure, at each model's own horizon h.
+
+Every month m from the first validation target up to the last test target is forecast once by **every** candidate, each from `train_rows(m, h)` only (standardisation, PCs and factors re-extracted), and the squared errors are stored.
+
+At test target t, the forecast origin is t − h; the candidate with the lowest average error over the 50 months ending at t − h wins, and its forecast of t is used. All those errors are for months whose outcomes are known at the origin, and each came from a forecast made with data up to its own origin, so there is no look-ahead. As the candidates' forecasts are computed once per month, the re-validation frequency does not change the runtime.
+
+```{r tuning}
+candidate_errors <- function(model, s, h) {
+  months <- (WINDOW + 1 - h - N_VAL + 1):(WINDOW + s$nprev)   # first validation target .. last test target
+  res <- lapply(months, function(m) {
+    Ysub <- s$Y[train_rows(m, h), , drop = FALSE]
+    if (model == "ridge") ridge_candidates(Ysub, h) else farm_candidates(Ysub, h)
+  })
+  pred <- do.call(rbind, lapply(res, `[[`, "pred"))          # months x candidates
+  list(months = months, pred = pred, err = (s$Y[months, 1] - pred)^2,
+       nsel = if (model == "farm") do.call(rbind, lapply(res, `[[`, "nsel")))
+}
+
+choose_candidate <- function(ce, t, h) {            # validation: the 50 months ending at origin t - h
+  val <- match((t - h - N_VAL + 1):(t - h), ce$months)
+  mse <- colMeans(ce$err[val, , drop = FALSE])
+  pos <- which.min(mse)
+  list(pos = pos, val_mse = mse[pos], mse = mse)
+}
+```
+
+## Model runner
+
+For each horizon: compute every candidate's forecasts and errors, then go through the test targets in order, re-validating every `RETUNE_EVERY` steps. The tuning path records the chosen K and λ at every test forecast.
+
+```{r runner}
+run_model <- function(model, s) {
+  P    <- matrix(NA_real_, s$nprev, 12, dimnames = list(NULL, paste0("h", 1:12)))
+  NL   <- if (model == "ridge") RIDGE_N_LAMBDA else LASSO_N_LAMBDA
+  path <- list(); curves <- list()
+
+  for (h in HORIZONS) {
+    cat(" ", model, "| h =", h, "\n")
+    ce  <- candidate_errors(model, s, h)
+    pos <- val_mse <- nsel <- numeric(s$nprev)
+    for (k in 1:s$nprev) {
+      t <- WINDOW + k
+      if ((k - 1) %% RETUNE_EVERY == 0) ch <- choose_candidate(ce, t, h)   # re-validate
+      if (k == 1) first <- ch
+      row        <- match(t, ce$months)
+      P[k, h]    <- ce$pred[row, ch$pos]
+      pos[k]     <- ch$pos
+      val_mse[k] <- ch$val_mse
+      nsel[k]    <- if (model == "farm") ce$nsel[row, ch$pos] else NA
+    }
+    path[[h]] <- data.frame(
+      model = model, h = h, target = 1:s$nprev, target_date = s$dates[WINDOW + 1:s$nprev],
+      K = if (model == "farm") FARM_K_GRID[(pos - 1) %/% NL + 1] else NA,
+      K_max = if (model == "farm") max(FARM_K_GRID) else NA,
+      lambda_pos = (pos - 1) %% NL + 1, grid_size = NL,
+      lambda_ratio = log_grid(1, if (model == "ridge") RIDGE_RANGE else LASSO_RANGE, NL)[(pos - 1) %% NL + 1],
+      val_mse = val_mse, nsel = nsel)
+    if (model == "farm")                             # validation MSE by K at the first test forecast
+      curves[[paste0("h", h)]] <- apply(matrix(first$mse, nrow = NL), 2, min)
+  }
+  idx_all <- WINDOW + 1:s$nprev
+  list(pred   = P,
+       real   = s$Y[idx_all, 1],
+       dates  = s$dates[idx_all],
+       path   = do.call(rbind, path),
+       curves = curves)
+}
+
+load_results <- function(sample, models = c("ridge", "farm"), tag = RUN_TAG) {
+  files <- setNames(out_file(sample, models, tag), models)
+  files <- files[file.exists(files)]
+  rs    <- lapply(files, readRDS)
+  list(P      = lapply(rs, `[[`, "pred"),
+       real   = rs[[1]]$real,
+       dates  = rs[[1]]$dates,
+       path   = do.call(rbind, lapply(rs, `[[`, "path")),
+       curves = rs$farm$curves)
+}
+```
+
+## Scree plots on the training set (sets K_max)
+
+The PCA FARM uses, on the training set common to every horizon (the h = 12 training set, which lies inside all the others: official 1992-02 → 2006-01), so no validation or test data are involved. Same matrix as FARM: 4 lags of every predictor, standardised.
+
+- **Scree plot (variance explained per component):** where it flattens, extra components add little. Use it to set `FARM_K_MAX` in the "Set K_max" chunk below; recursive validation picks K within 1, …, K_max for each horizon.
+- **Cumulative variance explained:** how much of the predictors' co-movement the first K components capture. A slow, steady climb means a weak factor structure (variation spread across many series).
+
+```{r factors}
+training_pca <- function(s) {
+  tr <- train_rows(WINDOW + 1 - 12 - N_VAL + 1, 12)       # h = 12 training set
+  Ys <- s$Y[tr, , drop = FALSE]
+  X  <- design(Ys, 12)$X                                  # same stacked-lag matrix as FARM
+  colnames(X) <- paste0(rep(colnames(Ys), N_LAGS), "_lag", rep(0:(N_LAGS - 1), each = ncol(Ys)))
+  X  <- X[, apply(X, 2, sd) > 0]
+  cat("Training set:", fmt(s$dates[min(tr)]), "to", fmt(s$dates[max(tr)]), "|",
+      ncol(X), "predictors (incl. lags) |", nrow(X), "usable obs\n")
+  prcomp(X, center = TRUE, scale. = TRUE)
+}
+
+show_pca <- function(pc, label, n_show = 40) {
+  ve <- pc$sdev^2 / sum(pc$sdev^2)
+  print(round(cbind(component = 1:n_show, share = ve[1:n_show], cumulative = cumsum(ve)[1:n_show]), 3),
+        row.names = FALSE)
+  plot(ve[1:n_show], type = "b", pch = 19, main = paste(label, "- scree"),
+       xlab = "Component", ylab = "Share of variance explained")
+  plot(cumsum(ve)[1:n_show], type = "b", pch = 19, main = paste(label, "- cumulative"),
+       xlab = "Number of components", ylab = "Cumulative share of variance explained", ylim = c(0, 1))
+}
+
+for (nm in names(SAMPLES)) {
+  cat("\n=====", nm, "=====\n")
+  pc <- training_pca(load_sample(SAMPLES[[nm]]))
+  show_pca(pc, nm)
+}
+```
+
+**Scree Plot Interpretation:**
+
+- **Official data**: share of variance explained falls steadily through the first 8–9 components, then flattens at about component 9–10 (around 1.4%). After that it’s a smooth, slow tail with no further breaks.
+
+- **Self data**: a sharp elbow at PC3, a shelf from PC4 to PC9 and a clear step down at 10 before a flat tail.
+
+- **Conclusion**: Set upper bound of parameter grid (K_max) to **10** for recursive CV on the PCA chosen component length
+
+### Set K_max
+
+FARM's K grid is 1, …, K_max; recursive validation picks K within it for each horizon. Change the number here (based on the plots above) and run this chunk before the main run.
+
+```{r set-kmax}
+FARM_K_MAX  <- 10              # from the training-set scree plots above
+FARM_K_GRID <- 1:FARM_K_MAX    # number of factors, chosen jointly with the LASSO lambda
+```
+
+## Main run
+
+```{r run}
+t0 <- Sys.time()
+for (sample in names(SAMPLES)) {
+  if (!length(MODELS_TO_RUN)) break
+  s <- load_sample(SAMPLES[[sample]])
+  for (m in MODELS_TO_RUN) saveRDS(run_model(m, s), out_file(sample, m))
+}
+print(Sys.time() - t0)
+
+res_off  <- load_results("official")
+res_self <- load_results("self")
+range(res_off$dates);  length(res_off$dates)          # 2012-02-01 to 2026-07-01, 174
+range(res_self$dates); length(res_self$dates)         # 2001-02-01 to 2026-07-01, 306
+```
+
+## Tuning results
+
+- **First choice per horizon** (the validation set in the alignment tables): the chosen K (FARM) and λ (as a fraction of λ_max, and its position in the grid), and the validation MSE.
+- **Over the test period:**
+  - how often the re-validated choice sits at an edge. For FARM, how often K = K_max and how many different K were used.
+    - For ridge, the largest-λ edge means ridge has shrunk everything and forecasts the window mean; widening the grid would not change that forecast.
+    - For FARM, the largest-λ edge means the LASSO selects nothing (a pure factor model), which is a valid outcome. If K = K_max often, raise `FARM_K_MAX` in the "Set K_max" chunk and re-run from there.
+- **Plots (h = 1):** the chosen K and λ over the test period, and FARM's validation MSE for each K at the first test forecast.
+
+```{r winners}
+show_tuning <- function(r) {
+  w <- r$path
+  w$edge <- ifelse(w$lambda_pos == 1, "largest", ifelse(w$lambda_pos == w$grid_size, "smallest", ""))
+  first <- subset(w, target == 1)
+  first$lambda_ratio <- signif(first$lambda_ratio, 3); first$val_mse <- signif(first$val_mse, 3)
+  cat("First choice (start of the test period):\n")
+  print(first[, c("model", "h", "K", "lambda_ratio", "lambda_pos", "edge", "val_mse")], row.names = FALSE)
+  cat("\nOver the test period (share of test forecasts):\n")
+  summ <- do.call(rbind, lapply(split(w, list(w$model, w$h), drop = TRUE), function(d) data.frame(
+    model = d$model[1], h = d$h[1],
+    lambda_largest = round(mean(d$edge == "largest"), 2), lambda_smallest = round(mean(d$edge == "smallest"), 2),
+    K_at_max = if (d$model[1] == "farm") round(mean(d$K == d$K_max), 2) else NA,
+    K_used = if (d$model[1] == "farm") paste(sort(unique(d$K)), collapse = ",") else "")))
+  print(summ, row.names = FALSE)
+  if (any(summ$K_at_max > 0.25, na.rm = TRUE)) warning("FARM often chose K = K_max: consider raising FARM_K_MAX")
+}
+
+plot_tuning <- function(r, label, h_show = 1) {
+  w <- subset(r$path, h == h_show)
+  for (m in unique(w$model)) {
+    d <- subset(w, model == m)
+    plot(d$target_date, d$lambda_ratio, type = "s", log = "y", main = paste(label, m, "h =", h_show),
+         xlab = "", ylab = "Chosen lambda / lambda_max (log scale)")
+    if (m == "farm") plot(d$target_date, d$K, type = "s", main = paste(label, "farm h =", h_show),
+                          xlab = "", ylab = "Chosen K", ylim = c(1, max(FARM_K_GRID)))
+  }
+}
+
+show_tuning(res_off)
+show_tuning(res_self)
+plot_tuning(res_off, "official")
+plot_tuning(res_self, "self")
+
+for (nm in c("official", "self")) {
+  r <- if (nm == "official") res_off else res_self
+  if (!is.null(r$curves$h1))
+    plot(FARM_K_GRID, r$curves$h1, type = "b", pch = 19, main = paste(nm, "h = 1, first validation"),
+         xlab = "Number of factors K", ylab = "Validation MSE (best lambda for each K)")
+}
+```
+
+## Evaluation (MSE)
+
+Mean squared forecast errors for the test period (main: re-validated yearly). MSE relative to the AR benchmark is computed by the forecast combination, once all models' CSVs are in.
+
+```{r evaluate}
+mse <- function(e) mean(e^2)
+
+# Accumulated forecast over H months from one origin: P[j,1] + P[j+1,2] + ... + P[j+H-1,H]
+acc_forecast <- function(P, H) {
+  sapply(1:(nrow(P) - H + 1), function(j) sum(P[cbind(j:(j + H - 1), 1:H)]))
+}
+acc_actual <- function(real, H) {
+  sapply(1:(length(real) - H + 1), function(j) sum(real[j:(j + H - 1)]))
+}
+
+evaluate <- function(r) {
+  monthly <- sapply(r$P, function(P) apply(P, 2, function(p) mse(r$real - p)))
+  acc <- do.call(cbind, lapply(c(3, 6, 12), function(H) {
+    truth <- acc_actual(r$real, H)
+    vapply(r$P, function(P) mse(truth - acc_forecast(P, H)), numeric(1))
+  }))
+  colnames(acc) <- c("acc3", "acc6", "acc12")
+  signif(rbind(monthly, t(acc)), 4)
+}
+
+subset_dates <- function(r, from, to) {             # contiguous target dates only
+  keep <- r$dates >= from & r$dates <= to
+  list(P = lapply(r$P, function(P) P[keep, , drop = FALSE]),
+       real = r$real[keep], dates = r$dates[keep])
+}
+
+split_mse <- function(r, cut = as.Date("2020-01-01"), h = 1) {
+  pre <- r$dates < cut
+  sapply(r$P, function(P) c(before = mse(r$real[pre]  - P[pre, h]),
+                            after  = mse(r$real[!pre] - P[!pre, h])))
+}
+
+evaluate(res_off)                                                           # primary
+evaluate(res_self)                                                          # 2001-02 to 2026-07
+evaluate(subset_dates(res_self, as.Date("2001-02-01"), as.Date("2012-01-01")))  # 2001-02 to 2012-01
+evaluate(subset_dates(res_self, min(res_off$dates), max(res_off$dates)))    # same dates as primary
+split_mse(res_off)
+```
+
+## Export for the forecast combination
+
+Files for GitHub, in `results/forecasts/` (commit these; the `.rds` files are working files):
+
+- `forecasts_ridge_farm_<sample>.csv` (main: re-validated yearly), one row per model × horizon × target month: `sample, model, h, origin_date, target_date, forecast, actual`. `origin_date` is the last month of data used (target_date − h). Dates are YYYY-MM-DD; values are monthly log inflation (× 100 = %). Official: 174 targets × 12 horizons = 2,088 rows per model; self: 306 × 12 = 3,672.
+- `tuning_path_ridge_farm.csv`: the K and λ (fraction of λ_max) in use at every test forecast (changing once a year), with the validation MSE of the last re-validation.
+
+```{r export}
+export_forecasts <- function(r, sample, P = r$P) {
+  hs <- which(colSums(!is.na(P[[1]])) > 0)          # horizons that were run (all 12 in the full run)
+  do.call(rbind, lapply(names(P), function(m) do.call(rbind, lapply(hs, function(h)
+    data.frame(sample      = sample,
+               model       = m,
+               h           = h,
+               origin_date = format(r$dates %m-% months(h), "%Y-%m-%d"),
+               target_date = format(r$dates, "%Y-%m-%d"),
+               forecast    = P[[m]][, h],
+               actual      = r$real)))))
+}
+
+fc_dir <- here("results", "forecasts")
+for (nm in c("official", "self")) {
+  r  <- if (nm == "official") res_off else res_self
+  fc <- export_forecasts(r, nm)
+  stopifnot(!anyNA(fc$forecast), all(table(fc$model, fc$h) == length(r$dates)))  # complete
+  write.csv(fc, file.path(fc_dir, paste0("forecasts_ridge_farm_", nm, ".csv")), row.names = FALSE)
+  if (length(unique(fc$h)) < 12) warning(nm, ": only h = ", paste(unique(fc$h), collapse = ", "),
+                                         " exported (test run?)")
+  print(table(fc$model, fc$h))                        # targets per model and horizon
+}
+
+path_out <- rbind(cbind(sample = "official", res_off$path), cbind(sample = "self", res_self$path))
+path_out$target_date <- format(path_out$target_date, "%Y-%m-%d")
+write.csv(path_out, file.path(fc_dir, "tuning_path_ridge_farm.csv"), row.names = FALSE)
+list.files(fc_dir)
+```
+
+## Post-run diagnostics
+
+Number of idiosyncratic series FARM's LASSO selects at each test forecast (h = 1). A low, stable count means FARM behaves like a factor model plus a few specific series; large spikes mean λ is unstable. For reporting only, not for changing the specification.
+
+```{r diagnostics}
+for (nm in c("official", "self")) {
+  r  <- if (nm == "official") res_off else res_self
+  fl <- subset(r$path, model == "farm" & h == 1)
+  cat(nm, ": LASSO selections at h = 1\n"); print(summary(fl$nsel))
+  plot(r$dates, fl$nsel, type = "l", main = nm, xlab = "",
+       ylab = "# idiosyncratic series selected (h = 1)")
+}
+```
+
+## US extension (all FRED-MD series)
+
+Uses `extended_data_official.rds` with **all** FRED-MD series (`US_*`) added to the Canadian predictors; the basket can be trimmed later by listing series in `US_BASKET`. Same window, dates, grids and tuning procedure; parameters are re-tuned on the extended predictor set. US series with gaps at the end are filled with the last available value; any still missing at the start are dropped (the names are printed). Set `RUN_US_EXT <- TRUE` in the settings chunk to run it (both chunks below do nothing while it is `FALSE`).
+
+Because the predictor set is larger, K_max is set again from its own training-set scree plot: run the first chunk below, look at the plots, set `FARM_K_MAX_US`, then run the second.
+
+```{r us-pca}
+if (RUN_US_EXT) {
+  US_BASKET <- "all"                       # all FRED-MD series; to trim: c("US_FEDFUNDS", "US_INDPRO", ...)
+  ext <- load_sample("extended_data_official.rds", us_vars = US_BASKET)
+  pc_ext <- training_pca(ext)
+  show_pca(pc_ext, "official + US")
+}
+```
+
+**Scree Plot:**
+
+- Choose FARM_F_MAX_US as 10 at the elbow. Also aligns with the previous CAN-only analysis.
+
+```{r us-extension}
+if (RUN_US_EXT) {
+  FARM_K_MAX_US <- 10                      # SET THIS after looking at the scree plot above
+  K_main        <- FARM_K_GRID
+  FARM_K_GRID   <- 1:FARM_K_MAX_US
+  for (m in c("ridge", "farm")) saveRDS(run_model(m, ext), out_file("official", m, "us_ext"))
+  FARM_K_GRID   <- K_main                   # restore the main setting
+
+  res_ext <- load_results("official", tag = "us_ext")
+  stopifnot(identical(res_ext$dates, res_off$dates))
+  show_tuning(res_ext)
+  plot_tuning(res_ext, "official + US")
+  cmp <- res_off; cmp$P <- c(res_off$P, setNames(res_ext$P, paste0(names(res_ext$P), "_us")))
+  print(evaluate(cmp))                                  # Canada only vs Canada + US
+
+  names(res_ext$P) <- paste0(names(res_ext$P), "_us")
+  write.csv(export_forecasts(res_ext, "official_us"),
+            file.path(fc_dir, "forecasts_ridge_farm_official_us.csv"), row.names = FALSE)
+  pth <- cbind(sample = "official_us", res_ext$path)
+  pth$target_date <- format(pth$target_date, "%Y-%m-%d")
+  write.csv(pth, file.path(fc_dir, "tuning_path_ridge_farm_us.csv"), row.names = FALSE)
+}
+```

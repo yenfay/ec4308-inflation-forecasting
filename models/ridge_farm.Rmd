@@ -25,7 +25,6 @@ output: html_document
   - self SA: 2001-02 → 2026-07 (306).
 - **Tuning (re-validated once a year):**
   - every 12 months of the test period (official: 2012-02, 2013-02, …, 2026-02, 15 times; self: 26 times), λ (and K for FARM) are re-chosen by recursive validation on the **latest 50 months whose outcomes are known at the forecast origin, then held until the next re-validation**.
-    - Re-validating once every month is too costly in terms of computational time.
   - The models are still re-estimated every month on their rolling 240-month window; only λ and K are updated yearly.
   - This revalidates the penalty parameters from time to time as new data arrive, in the spirit of Medeiros, who re-selects λ in every window (by BIC: computationally cheap). `RETUNE_EVERY` sets the frequency (12 = yearly, the main specification; 1 = every step).
 - **Validation Set:** the latest **50 months** at each re-validation. The tables below show the first one; each later revalidation is 12 months further on.
@@ -35,7 +34,7 @@ output: html_document
 **Official (primary)**
 
 | h   | Training set      | Validation set    | Obs | Test set          | Forecasts |
-|------------|------------|------------|------------|------------|------------|
+|-----|-------------------|-------------------|-----|-------------------|-----------|
 | 1   | 1992-02 → 2007-11 | 2007-12 → 2012-01 | 50  | 2012-02 → 2026-07 | 174       |
 | 2   | 1992-02 → 2007-09 | 2007-11 → 2011-12 | 50  | 2012-02 → 2026-07 | 174       |
 | 3   | 1992-02 → 2007-07 | 2007-10 → 2011-11 | 50  | 2012-02 → 2026-07 | 174       |
@@ -52,7 +51,7 @@ output: html_document
 **Self-adjusted (robustness: longer period)**
 
 | h   | Training set      | Validation set    | Obs | Test set          | Forecasts |
-|------------|------------|------------|------------|------------|------------|
+|-----|-------------------|-------------------|-----|-------------------|-----------|
 | 1   | 1981-02 → 1996-11 | 1996-12 → 2001-01 | 50  | 2001-02 → 2026-07 | 306       |
 | 2   | 1981-02 → 1996-09 | 1996-11 → 2000-12 | 50  | 2001-02 → 2026-07 | 306       |
 | 3   | 1981-02 → 1996-07 | 1996-10 → 2000-11 | 50  | 2001-02 → 2026-07 | 306       |
@@ -71,7 +70,7 @@ The "Alignment check" chunk below prints these tables from the actual data files
 **Parameter grids**
 
 | Parameter | Model | Values considered | Chosen by |
-|------------------|------------------|-------------------|------------------|
+|----|----|----|----|
 | λ (L2) | Ridge | 100 log-spaced values from 10² λ_max down to 10⁻⁶ λ_max (solved exactly, see below) | Recursive validation (50 months), per horizon |
 | λ (L1) | FARM sparse step | 100 log-spaced values from λ_max down to 10⁻² λ_max (glmnet's default range), one grid per K | Jointly with K, recursive validation (50 months), per horizon |
 | K (factors) | FARM | 1, 2, …, K_max, with K_max set from the training-set scree plot (see below) | Jointly with λ, same validation, per horizon |
@@ -92,7 +91,7 @@ The "Alignment check" chunk below prints these tables from the actual data files
 **Evaluation and handoff**
 
 - MSE for h = 1, …, 12 and for accumulated 3/6/12-month inflation (sum of the monthly forecasts from one origin). The AR benchmark, and MSE relative to it, come from the benchmark owner / forecast combination.
-- Export (for GitHub, in `results/forecasts/`):
+- Export (for GitHub, in `results/farm-ridge/`):
   - one long CSV per sample, `forecasts_ridge_farm_<sample>.csv` (main: re-validated yearly), with columns `sample, model, h, origin_date, target_date, forecast, actual`; dates as YYYY-MM-DD; values in monthly log inflation (× 100 = %).
   - `tuning_path_ridge_farm.csv` has the chosen K and λ at every test forecast. The `.rds` files in `results/` are working files and do not need to be committed.
 
@@ -105,7 +104,7 @@ The "Alignment check" chunk below prints these tables from the actual data files
 ## Specification and deviations from Medeiros
 
 | Item | Medeiros | Here | Why |
-|------------------|------------------|------------------|------------------|
+|----|----|----|----|
 | Ridge λ | n/a | Recursive validation | Information criteria need degrees of freedom; `ic.glmnet` counts non-zero coefficients, which never changes for ridge, so BIC always picks the smallest λ |
 | LASSO λ in FARM | BIC | Recursive validation | BIC saturated on official data (\~238 variables selected with \~236 observations); Fan, Lou & Yu also use cross-validation |
 | Number of factors | Fixed at 4 | Recursive validation (jointly with λ) over 1, …, K_max | Chosen by forecast performance, as for PCR in the lecture; K_max is set from the training-set scree plot |
@@ -173,7 +172,7 @@ MODELS_TO_RUN <- character(0) # just load saved results
 RUN_TAG       <- "main"                    # label for result files
 RUN_US_EXT    <- TRUE                 # TRUE = also run the US extension
 
-dir.create(here("results", "forecasts"), recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results", "farm-ridge"), recursive = TRUE, showWarnings = FALSE)
 out_file <- function(sample, model, tag = RUN_TAG) {
   here("results", paste0(model, "_", sample, "_", tag, ".rds"))
 }
@@ -579,16 +578,18 @@ split_mse <- function(r, cut = as.Date("2020-01-01"), h = 1) {
                             after  = mse(r$real[!pre] - P[!pre, h])))
 }
 
-evaluate(res_off)                                                           # primary
-evaluate(res_self)                                                          # 2001-02 to 2026-07
-evaluate(subset_dates(res_self, as.Date("2001-02-01"), as.Date("2012-01-01")))  # 2001-02 to 2012-01
-evaluate(subset_dates(res_self, min(res_off$dates), max(res_off$dates)))    # same dates as primary
-split_mse(res_off)
+evaluate(res_off)   # main SA analysis - just CAD
+evaluate(res_self)  # self SA analysis - longer series, just CAD
+
+# Optional Runs here
+# evaluate(subset_dates(res_self, as.Date("2001-02-01"), as.Date("2012-01-01")))  # 2001-02 to 2012-01
+# evaluate(subset_dates(res_self, min(res_off$dates), max(res_off$dates)))    # same dates as primary
+# split_mse(res_off)
 ```
 
 ## Export for the forecast combination
 
-Files for GitHub, in `results/forecasts/` (commit these; the `.rds` files are working files):
+Files for GitHub, in `results/farm-ridge/` (commit these; the `.rds` files are working files):
 
 - `forecasts_ridge_farm_<sample>.csv` (main: re-validated yearly), one row per model × horizon × target month: `sample, model, h, origin_date, target_date, forecast, actual`. `origin_date` is the last month of data used (target_date − h). Dates are YYYY-MM-DD; values are monthly log inflation (× 100 = %). Official: 174 targets × 12 horizons = 2,088 rows per model; self: 306 × 12 = 3,672.
 - `tuning_path_ridge_farm.csv`: the K and λ (fraction of λ_max) in use at every test forecast (changing once a year), with the validation MSE of the last re-validation.
@@ -606,7 +607,7 @@ export_forecasts <- function(r, sample, P = r$P) {
                actual      = r$real)))))
 }
 
-fc_dir <- here("results", "forecasts")
+fc_dir <- here("results", "farm-ridge")
 for (nm in c("official", "self")) {
   r  <- if (nm == "official") res_off else res_self
   fc <- export_forecasts(r, nm)
@@ -639,16 +640,16 @@ for (nm in c("official", "self")) {
 
 ## US extension (all FRED-MD series)
 
-Uses `extended_data_official.rds` with **all** FRED-MD series (`US_*`) added to the Canadian predictors; the basket can be trimmed later by listing series in `US_BASKET`. Same window, dates, grids and tuning procedure; parameters are re-tuned on the extended predictor set. US series with gaps at the end are filled with the last available value; any still missing at the start are dropped (the names are printed). Set `RUN_US_EXT <- TRUE` in the settings chunk to run it (both chunks below do nothing while it is `FALSE`).
+Uses `extended_data_official.rds` and `extended_data_self.rds`, which add **all** FRED-MD series (`US_*`) to the Canadian predictors of each sample; the basket can be trimmed later by listing series in `US_BASKET`. Same window, dates, grids and tuning procedure; parameters are re-tuned on the extended predictor set. US series with gaps at the end are filled with the last available value; any still missing at the start of the sample are dropped (the names are printed; the self sample starts in 1981, so it may drop more). Set `RUN_US_EXT <- TRUE` in the settings chunk to run it (both chunks below do nothing while it is `FALSE`).
 
-Because the predictor set is larger, K_max is set again from its own training-set scree plot: run the first chunk below, look at the plots, set `FARM_K_MAX_US`, then run the second.
+Because the predictor set is larger, K_max is set again from each sample's own training-set scree plot: run the first chunk below, look at the plots, set `FARM_K_MAX_US`, then run the second. `US_TO_RUN` lists the samples to (re-)run; saved results are loaded for the others, so a sample that has already been run does not need to run again.
 
 ```{r us-pca}
 if (RUN_US_EXT) {
   US_BASKET <- "all"                       # all FRED-MD series; to trim: c("US_FEDFUNDS", "US_INDPRO", ...)
-  ext <- load_sample("extended_data_official.rds", us_vars = US_BASKET)
-  pc_ext <- training_pca(ext)
-  show_pca(pc_ext, "official + US")
+  US_FILES  <- c(official = "extended_data_official.rds", self = "extended_data_self.rds")
+  ext <- lapply(US_FILES, load_sample, us_vars = US_BASKET)
+  for (nm in names(ext)) show_pca(training_pca(ext[[nm]]), paste(nm, "+ US"))
 }
 ```
 
@@ -658,24 +659,89 @@ if (RUN_US_EXT) {
 
 ```{r us-extension}
 if (RUN_US_EXT) {
-  FARM_K_MAX_US <- 10                      # SET THIS after looking at the scree plot above
+  FARM_K_MAX_US <- c(official = 10, self = 10)   # SET THESE after looking at the scree plots above
+  US_TO_RUN     <- "self"         # samples to (re-)run; e.g. "self" if official is already saved
   K_main        <- FARM_K_GRID
-  FARM_K_GRID   <- 1:FARM_K_MAX_US
-  for (m in c("ridge", "farm")) saveRDS(run_model(m, ext), out_file("official", m, "us_ext"))
-  FARM_K_GRID   <- K_main                   # restore the main setting
+  for (nm in US_TO_RUN) {
+    FARM_K_GRID <- 1:FARM_K_MAX_US[[nm]]
+    for (m in c("ridge", "farm")) saveRDS(run_model(m, ext[[nm]]), out_file(nm, m, "us_ext"))
+  }
+  FARM_K_GRID   <- K_main                         # restore the main setting
 
-  res_ext <- load_results("official", tag = "us_ext")
-  stopifnot(identical(res_ext$dates, res_off$dates))
-  show_tuning(res_ext)
-  plot_tuning(res_ext, "official + US")
-  cmp <- res_off; cmp$P <- c(res_off$P, setNames(res_ext$P, paste0(names(res_ext$P), "_us")))
-  print(evaluate(cmp))                                  # Canada only vs Canada + US
+  for (nm in names(US_FILES)) {
+    if (!all(file.exists(out_file(nm, c("ridge", "farm"), "us_ext")))) next   # not run yet
+    res_ext <- load_results(nm, tag = "us_ext")
+    base    <- if (nm == "official") res_off else res_self
+    stopifnot(identical(res_ext$dates, base$dates))
+    cat("\n=====", nm, "+ US =====\n")
+    show_tuning(res_ext)
+    plot_tuning(res_ext, paste(nm, "+ US"))
+    cmp <- base; cmp$P <- c(base$P, setNames(res_ext$P, paste0(names(res_ext$P), "_us")))
+    print(evaluate(cmp))                                # Canada only vs Canada + US
 
-  names(res_ext$P) <- paste0(names(res_ext$P), "_us")
-  write.csv(export_forecasts(res_ext, "official_us"),
-            file.path(fc_dir, "forecasts_ridge_farm_official_us.csv"), row.names = FALSE)
-  pth <- cbind(sample = "official_us", res_ext$path)
-  pth$target_date <- format(pth$target_date, "%Y-%m-%d")
-  write.csv(pth, file.path(fc_dir, "tuning_path_ridge_farm_us.csv"), row.names = FALSE)
+    names(res_ext$P) <- paste0(names(res_ext$P), "_us")
+    write.csv(export_forecasts(res_ext, paste0(nm, "_us")),
+              file.path(fc_dir, paste0("forecasts_ridge_farm_", nm, "_us.csv")), row.names = FALSE)
+    pth <- cbind(sample = paste0(nm, "_us"), res_ext$path)
+    pth$target_date <- format(pth$target_date, "%Y-%m-%d")
+    write.csv(pth, file.path(fc_dir, paste0("tuning_path_ridge_farm_", nm, "_us.csv")), row.names = FALSE)
+  }
+}
+```
+
+## US key indicators (small, pre-specified basket)
+
+A handful of US series chosen in advance by how US conditions reach Canadian inflation (prices, energy, demand, labour market, monetary policy, exchange rate), not by test-period performance. Any US series that nearly duplicates a Canadian one (\|correlation\| \> 0.95 on the training set) is dropped, to avoid counting it twice. Same window, dates, grids, K_max and yearly re-validation as the main run; with only a few extra series, the main K_max is kept.
+
+Each model is estimated once and saved as `results/<model>_<sample>_us_key.rds`; later runs load it instead of re-estimating (delete the file to re-run). By default only the official sample is run; add `self` to `US_KEY_SAMPLES` to include the longer sample.
+
+```{r us-key}
+US_KEY <- c("US_CPIAUCSL",    # US CPI: inflation co-movement
+            "US_OILPRICEx",   # crude oil price: energy prices
+            "US_INDPRO",      # industrial production: US demand for Canadian exports
+            "US_UNRATE",      # unemployment rate: US slack
+            "US_FEDFUNDS",    # fed funds rate: US monetary policy
+            "US_EXCAUSx")     # CAD per USD: exchange-rate pass-through
+US_KEY_SAMPLES <- c(official = "extended_data_official.rds", self = "extended_data_self.rds")   # add self = "extended_data_self.rds" for the longer sample
+
+near_duplicates <- function(s, cutoff = 0.95) {   # US series that nearly copy a Canadian one (training set only)
+  Y   <- s$Y[train_rows(WINDOW + 1 - 12 - N_VAL + 1, 12), , drop = FALSE]
+  us  <- grep("^US_",  colnames(Y), value = TRUE)
+  can <- grep("^CAN_", colnames(Y), value = TRUE)
+  cc  <- abs(suppressWarnings(cor(Y[, us, drop = FALSE], Y[, can, drop = FALSE])))
+  out <- data.frame(us_series   = us,
+                    closest_can = can[apply(cc, 1, which.max)],
+                    abs_corr    = round(apply(cc, 1, max, na.rm = TRUE), 3))
+  out$dropped <- out$abs_corr > cutoff
+  out
+}
+
+for (nm in names(US_KEY_SAMPLES)) {
+  cat("\n=====", nm, "+ US key indicators =====\n")
+  s_key <- load_sample(US_KEY_SAMPLES[[nm]], us_vars = US_KEY)
+  dup   <- near_duplicates(s_key)
+  print(dup, row.names = FALSE)
+  s_key$Y <- s_key$Y[, setdiff(colnames(s_key$Y), dup$us_series[dup$dropped]), drop = FALSE]
+  cat("US series used:", paste(grep("^US_", colnames(s_key$Y), value = TRUE), collapse = ", "), "\n")
+
+  for (m in c("ridge", "farm")) {                 # estimate once; later runs load the saved results
+    f <- out_file(nm, m, "us_key")
+    if (!file.exists(f)) saveRDS(run_model(m, s_key), f)
+  }
+  res_key <- load_results(nm, tag = "us_key")
+  base    <- if (nm == "official") res_off else res_self
+  stopifnot(identical(res_key$dates, base$dates))
+  show_tuning(res_key)
+
+  cmp <- base
+  cmp$P <- c(base$P, setNames(res_key$P, paste0(names(res_key$P), "_uskey")))
+  ev <- evaluate(cmp)
+  print(ev)                                       # Canada only vs Canada + US key indicators
+  cat("\nMSE ratio, Canada + US key / Canada only (below 1 = the US indicators help):\n")
+  print(round(ev[, c("ridge_uskey", "farm_uskey")] / ev[, c("ridge", "farm")], 3))
+
+  names(res_key$P) <- paste0(names(res_key$P), "_uskey")
+  write.csv(export_forecasts(res_key, paste0(nm, "_uskey")),
+            file.path(fc_dir, paste0("forecasts_ridge_farm_", nm, "_uskey.csv")), row.names = FALSE)
 }
 ```

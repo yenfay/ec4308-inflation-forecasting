@@ -64,7 +64,7 @@ cv_lambda <- function(X, y, h, V = 50, lambda.grid, alpha = 1, na.handling = "fi
 
 #### FORMING FORECASTS USING LASSO ####
 
-runlasso <- function(Y, indice, lag, alpha = 1, V = 50, na.handling = "fill") {
+runlasso <- function(Y, indice, lag, alpha = 1, V = 50, na.handling = "fill", pos = NULL) {
   # dropping last h-1 rows so window ends at forecast origin
   Y <- Y[1:(nrow(Y) - lag + 1), ]
   
@@ -72,7 +72,7 @@ runlasso <- function(Y, indice, lag, alpha = 1, V = 50, na.handling = "fill") {
   stopifnot(!is.null(colnames(Y)))
   
   # compute principal components to add as predictors
-  comp <- prcomp(scale(Y, scale = FALSE))
+  comp <- prcomp(scale(Y))
   
   # augment predictors by the first 4 PCs
   Y2 <- cbind(Y, comp$x[,1:4])
@@ -99,8 +99,9 @@ runlasso <- function(Y, indice, lag, alpha = 1, V = 50, na.handling = "fill") {
   full <- glmnet(X, y, alpha = alpha)
   
   # rolling-origin CV picks the position of lambda.min in the grid
-  pos <- cv_lambda(X, y, h = lag, V = V, lambda.grid = full$lambda, 
+  if (is.null(pos)) pos <- cv_lambda(X, y, h = lag, V = V, lambda.grid = full$lambda, 
                    alpha = alpha, na.handling = na.handling)
+  pos <- min(pos, length(full$lambda))  # ensure pos is within bounds
   lambda.min <- full$lambda[pos]
   
   # named coefficient vector at lambda.min (intercept first)
@@ -136,19 +137,19 @@ runlasso <- function(Y, indice, lag, alpha = 1, V = 50, na.handling = "fill") {
   return(list("coef" = beta,
               "pred" = c("lasso" = pred.lasso, "post" = pred.post),
               "lambda" = lambda.min,
-              "support" = c("size" = length(support), "empty" = empty, "large" = large)))
+              "support" = c("size" = length(support), "empty" = empty, "large" = large),
+              "pos" = pos))
 }
 
 #### PRODUCING SERIES OF H-STEP LASSO FORECASTS USING ROLLING WINDOW ####
 
 lasso.rolling.window <- function( Y, nprev, dates, indice = 1, lag = 1, alpha = 1, V = 50,
-                                na.handling = "fill") {
+                                na.handling = "fill", retune.every = 12) {
   
   # dates must be passed explicitly and match rows of Y
   stopifnot(!is.null(dates), length(dates) == nrow(Y))
   
   # blank matrix for coefficients at each iteration
-  # intercept + 4 lags of (series + 4 PCs) = 1 + 4*(406 + 4) = 1641
   save.coef <- matrix(NA, nprev, 1 + 4*(ncol(Y) + 4))
   
   # blank forecasts (one column per method)
@@ -159,13 +160,21 @@ lasso.rolling.window <- function( Y, nprev, dates, indice = 1, lag = 1, alpha = 
   
   # blank chose lambda
   save.lambda <- rep(NA, nprev)
+
+  pos <- NULL  # initial position of lambda.min in the grid
+  save.pos <- rep(NA, nprev)
   
   for(i in nprev:1) {
     # define estimation window
     Y.window <- Y[(1 + nprev - i):(nrow(Y) - i),]
     
     # call function to fit LASSO and Post-LASSO
-    lasso <- runlasso(Y.window, indice, lag, alpha, V, na.handling)
+    k <- 1 + nprev - i
+    retune <- (k - 1) %% retune.every == 0
+    lasso <- runlasso(Y.window, indice, lag, alpha, V, na.handling,
+                      pos = if (retune) NULL else pos)
+    pos <- lasso$pos
+    save.pos[k] <- pos
     
     # save estimated coefficients
     save.coef[(1 + nprev - i),] <- lasso$coef
@@ -179,6 +188,8 @@ lasso.rolling.window <- function( Y, nprev, dates, indice = 1, lag = 1, alpha = 
     
     # # display iteration number
     # cat("iteration", (1 + nprev - i), "\n")
+
+    
   }
   # name coefficient columns (intercept + predictors) for the selected-variable analysis
   colnames(save.coef) <- names(lasso$coef)
@@ -221,5 +232,5 @@ lasso.rolling.window <- function( Y, nprev, dates, indice = 1, lag = 1, alpha = 
   return(list("pred" = save.pred, "actual" = actual,
               "target_date" = target_date, "origin_date" = origin_date,
               "coef" = save.coef, "lambda" = save.lambda, "support" = save.support,
-              "errors" = errors))
+              "errors" = errors, "pos" = save.pos))
 }

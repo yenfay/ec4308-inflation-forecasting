@@ -17,15 +17,16 @@ library(here)
 # 2. Config
 
 ```{r config}
-DATASET <- "extended_data_self"
+DATASET <- "extended_data_self"   # "main_data_official" / "main_data_self" / "extended_data_official" / "extended_data_self" 
 
 HORIZONS <- c(1, 3, 6, 12)
-OOS_START <- as.Date("2012-02-01")
-WINDOW <- NULL          # NULL: (nrow - nprev); integer: fixed window size
+OOS_START <- if (grepl("self", DATASET)) as.Date("2001-02-01") else as.Date("2012-02-01")
+WINDOW <- 240          # NULL: (nrow - nprev); integer: fixed window size
 
 N_LAGS <- 4
 N_PCS <- 4
 CV_N_VAL <- 50          # validation points at end of each window
+RETUNE_EVERY <- 12        # retune lambda every 12 months (1 year)
 
 SEED <- 4308
 OUT_DIR <- "results/lasso"
@@ -39,14 +40,15 @@ set.seed(SEED)
 # 3. Load data
 
 ```{r load-data}
-# Expect: dim(Y) = 414 x 406, anyNA(Y) = FALSE, colnames(Y)[1] = "inflation_mom"
-
 df <- readRDS(here::here("data","processed", paste0(DATASET, ".rds")))
 df <- df[!is.na(df$inflation_mom),]
 dates <- df$date
 
-can_cols <- grep("^CAN_", names(df), value = TRUE)
-Y <- as.matrix(df[, c("inflation_mom", can_cols)])
+pred_cols <- grep("^(CAN|US)_", names(df), value = TRUE)
+pred_cols <- setdiff(pred_cols, "US_ACOGNO")
+
+Y <- as.matrix(df[, c("inflation_mom", pred_cols)])
+Y <- zoo::na.locf(Y, na.rm = FALSE)
 
 dim(Y); anyNA(Y); colnames(Y)[1]
 ```
@@ -54,7 +56,7 @@ dim(Y); anyNA(Y); colnames(Y)[1]
 # 4. Out-of-sample split and feasibility
 
 ```{r oos-feasibility}
-# Expect: nprev = 174, W = 240, L = 186 at h = 1 and 153 at h = 12
+# Expect: nprev = 174 (official) or 306 (self), W = 240, L = 186 at h = 1 and 153 at h = 12
 
 nprev <- sum(dates >= OOS_START)
 
@@ -85,10 +87,7 @@ source(here::here("models", "func-lasso.R"))
 # 6. Timing and CV checks
 
 ```{r timing-checks}
-df_time <- df[1:240, ]
-
-can_cols <- grep("^CAN_", names(df_time), value = TRUE)
-Y_time <- as.matrix(df_time[, c("inflation_mom", can_cols)])
+Y_time <- Y[1:240, ]
 
 dim(Y_time); anyNA(Y_time); colnames(Y_time)[1]
 
@@ -97,7 +96,7 @@ lag <- 1; indice <- 1
 Y_time <- Y_time[1:(nrow(Y_time) - lag + 1), ]
   
 # compute principal components to add as predictors
-comp <- prcomp(scale(Y_time, scale = FALSE))
+comp <- prcomp(scale(Y_time))
   
 # augment predictors by the first 4 PCs
 Y2 <- cbind(Y_time, comp$x[,1:4])
@@ -129,10 +128,10 @@ h = 1
 
 ```{r smoke-test-h-1}
 system.time({
-  r <- lasso.rolling.window(Y, nprev = 5, dates = dates, lag = 1)
+  r <- lasso.rolling.window(tail(Y, 254), nprev = 14, dates = tail(dates, 254), lag = 1)
 })
 
-anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 5 x 2, 5 x 1641
+anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 5 x 2, 5 x 1641 (main) or 5 x 2141 (extended)
 r$support                                  # any row with empty = 0 and large = 0?
 data.frame(origin = r$origin_date, target = r$target_date)        # as dates
 ```
@@ -141,10 +140,10 @@ h = 12
 
 ```{r smoke-test-h-12}
 system.time({
-  r <- lasso.rolling.window(Y, nprev = 5, dates = dates, lag = 12)
+  r <- lasso.rolling.window(tail(Y, 254), nprev = 14, dates = tail(dates, 254), lag = 12)
 })
 
-anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 5 x 2, 5 x 1641
+anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 5 x 2, 5 x 1641 (main) or 5 x 2141 (extended)
 r$support                                  # any row with empty = 0 and large = 0?
 data.frame(origin = r$origin_date, target = r$target_date)        # as dates
 ```
@@ -160,11 +159,10 @@ dir.create(here::here(OUT_DIR), recursive = TRUE, showWarnings = FALSE)
 
 for (h in HORIZONS) {
   cat("horizon", h, "\n")
-  results[[paste0("h", h)]] <- lasso.rolling.window(Y, nprev, dates, indice = 1, lag = h)
+  results[[paste0("h", h)]] <- lasso.rolling.window(Y, nprev, dates, indice = 1, lag = h, retune.every = RETUNE_EVERY)
   saveRDS(results, here::here(OUT_DIR, paste0("results_lasso_", DATASET, ".rds")))
 }
 
-# regression check only: LASSO RMSE near 0.00249 at h = 1 and 0.00281 at h = 12
 sapply(results, function(r) r$errors)
 ```
 
@@ -182,6 +180,7 @@ for (h in HORIZONS) {
             length(r$actual) == nprev, !anyNA(r$actual),
             length(r$target_date) == nprev, length(r$origin_date) == nprev,
             !anyNA(r$lambda))
+  stopifnot(all(diff(r$pos)[seq_along(diff(r$pos)) %% RETUNE_EVERY != 0] == 0))
   cat("h =", h, ": forecasts OK\n")
 }
 
@@ -205,9 +204,6 @@ for (h in HORIZONS) {
             identical(r$target_date, tail(dates, nprev)))
   cat("h =", h, ": dates OK\n")
 }
-
-# raw data with a date column and target_h1, target_h3, ... columns
-# (adjust the object and column names to your notebook
 ```
 
 
@@ -217,7 +213,7 @@ for (h in HORIZONS) {
   r <- results[[paste0("h", h)]]
   
   # look up each origin date in the raw data
-  row <- match(r$origin_date, dates)
+  row <- match(r$origin_date, df$date)
   stopifnot(!anyNA(row))
   
   # realised target stored at the origin row must equal the stored actual
@@ -247,8 +243,8 @@ for (h in HORIZONS) {
     W <- W[1:(nrow(W) - h + 1), ]
     n.w <- nrow(W)
     
-    # PCs (centred only), re-estimated on this window
-    pcs <- prcomp(scale(W, scale = FALSE))$x[, 1:4]
+    # PCs re-estimated on this window
+    pcs <- prcomp(scale(W))$x[, 1:4]
     Y2 <- cbind(W, pcs)
     
     # build design row by row
@@ -329,12 +325,36 @@ dir.create(here::here(OUT_DIR), recursive = TRUE, showWarnings = FALSE)
 saveRDS(forecast_long, here::here(OUT_DIR, paste0("forecasts_", DATASET, ".rds")))
 ```
 
-# 11. Analysis
+## Write results to CSV
 
-```{r analysis}
-# TODO: most often selected variables by horizon, including PCs and inflation lags
-# TODO: empty-support pattern across all horizons; count of supports above n/2
+```{r}
+samples <- c(official = "main_data_official", self = "main_data_self",
+             official_us = "extended_data_official", self_us = "extended_data_self")
+
+for (s in names(samples)) {
+  f <- readRDS(here::here(OUT_DIR, paste0("forecasts_", samples[[s]], ".rds")))
+  f$sample <- s
+  f <- f[, c("sample", "model", "h", "origin_date", "target_date", "forecast", "actual")]
+  write.csv(f, here::here(OUT_DIR, paste0("forecasts_lasso_", s, ".csv")), row.names = FALSE)
+}
 ```
+
+```{r}
+for (s in names(samples)) {
+  res <- readRDS(here::here(OUT_DIR, paste0("results_lasso_", samples[[s]], ".rds")))
+
+  diag <- do.call(rbind, lapply(names(res), function(nm) {
+    r <- res[[nm]]
+    data.frame(sample = s, h = as.numeric(sub("h", "", nm)),
+               origin_date = r$origin_date, target_date = r$target_date,
+               lambda = r$lambda, pos = r$pos, r$support)
+  }))
+
+  write.csv(diag, here::here(OUT_DIR, paste0("tuning_path_lasso_", s, ".csv")), row.names = FALSE)
+}
+```
+
+# 11. Analysis
 
 ```{r analysis-against-random-walk}
 # random walk benchmark: forecast of target at t+h is inflation at origin t
@@ -444,12 +464,12 @@ for (h in HORIZONS) {
 run.tab
 
 # stripe plot: red marks origins with an empty support, one row per horizon
-dts <- results[[1]]$origin_date
+dts <- c(results$h12$origin_date, results$h1$origin_date)
 plot(NULL, xlim = range(dts), ylim = c(0.5, length(HORIZONS) + 0.5),
      xaxt = "n", yaxt = "n", xlab = "origin date", ylab = "", main = "Empty LASSO support")
 axis(2, at = seq_along(HORIZONS), labels = paste("h =", HORIZONS), las = 1)
 
-# yearly ticks labelled as years
+# ticks labelled as years
 yrs <- seq(as.Date(format(min(dts), "%Y-01-01")), max(dts), by = "2 years")
 axis(1, at = yrs, labels = format(yrs, "%Y"))
 

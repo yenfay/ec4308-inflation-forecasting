@@ -48,7 +48,7 @@ standardise <- function(x, sample, horizons = HORIZONS) {
 
   x %>%
     transmute(
-      sample = sample,
+      sample = .env$sample,
       model = as.character(model),
       h = as.integer(h),
       origin_date = as.Date(origin_date),
@@ -442,7 +442,7 @@ if (!is.null(self)) {
 }
 ```
 
-## US-predictor extension
+## US-predictor evaluation
 
 ```{r us-extension}
 us_files <- tibble(
@@ -466,10 +466,6 @@ read_us <- function(path, target_sample, family) {
         family == "lasso" & model == "post_lasso" ~ "post_lasso_us",
         TRUE ~ model
       )
-    ) %>%
-    filter(
-      target_date >= as.Date("2012-02-01"),
-      target_date <= as.Date("2026-07-01")
     )
 }
 

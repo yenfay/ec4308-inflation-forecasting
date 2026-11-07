@@ -1,6 +1,6 @@
 
 WINDOW <- 240
-HORIZONS <- 1:12
+HORIZONS <- c(1L, 3L, 6L, 12L)
 P_MAX <- 12
 
 SAMPLES <- c(
@@ -137,7 +137,7 @@ for (sample_name in names(SAMPLES)) {
 official <- all_results$official
 
 stopifnot(
-  nrow(official) == 174 * 12 * 2,
+  nrow(official) == 174 * length(HORIZONS) * 2,
   !anyNA(official$forecast),
   !anyNA(official$actual),
   all(official$selected_p[official$model == "AR_BIC"] %in% 1:P_MAX)

@@ -1,2 +1,596 @@
-# Results and Evaluation
-After models are completed, run all the results and evaluate in this Rmd file
+---
+title: "EC4308 | Forecast Evaluation"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+HORIZONS <- c(1L, 3L, 6L, 12L)
+ML_MODELS <- c("lasso", "post_lasso", "ridge", "farm", "rf", "bag", "xgb")
+BASE_MODELS <- c("RW", "AR_BIC", ML_MODELS)
+KEYS <- c("sample", "h", "origin_date", "target_date")
+OOS_START <- as.Date("2012-02-01")
+OOS_END <- as.Date("2026-07-01")
+GR_WINDOW <- 60L
+OUT <- "results/evaluation"
+dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
+
+save_csv <- function(x, name) {
+  write.csv(x, file.path(OUT, name), row.names = FALSE)
+}
+
+show_table <- function(x) {
+  print(tibble::as_tibble(x), n = Inf, width = Inf)
+}
+```
+
+
+```{r load-forecasts}
+forecast_paths <- function(sample) {
+  c(
+    paste0("results/forecasts/forecasts_benchmarks_", sample, ".csv"),
+    paste0("results/farm-ridge/forecasts_ridge_farm_", sample, ".csv"),
+    paste0("results/forecasts/forecasts_rf_xgb_", sample, ".csv"),
+    paste0("results/lasso/forecasts_main_data_", sample, ".rds")
+  )
+}
+
+standardise <- function(x, sample, horizons = HORIZONS) {
+  stopifnot(all(c("model", "h", "origin_date", "target_date", "forecast", "actual") %in% names(x)))
+
+  x %>%
+    transmute(
+      sample = sample,
+      model = as.character(model),
+      h = as.integer(h),
+      origin_date = as.Date(origin_date),
+      target_date = as.Date(target_date),
+      forecast = as.numeric(forecast),
+      actual = as.numeric(actual)
+    ) %>%
+    filter(h %in% horizons, !is.na(forecast), target_date >= OOS_START, target_date <= OOS_END)
+}
+
+read_forecasts <- function(sample, required = TRUE) {
+  paths <- forecast_paths(sample)
+  missing <- paths[!file.exists(paths)]
+
+  if (length(missing)) {
+    if (required) stop("Missing forecast files: ", paste(missing, collapse = ", "))
+    message("Skipping ", sample, ": missing ", paste(missing, collapse = ", "))
+    return(NULL)
+  }
+
+  inputs <- list(read.csv(paths[1]), read.csv(paths[2]), read.csv(paths[3]), readRDS(paths[4]))
+  bind_rows(lapply(inputs, standardise, sample = sample))
+}
+
+month_id <- function(d) as.integer(format(d, "%Y")) * 12L + as.integer(format(d, "%m"))
+
+validate_forecasts <- function(data) {
+  stopifnot(
+    nrow(data) > 0L,
+    !anyNA(data),
+    all(is.finite(data$forecast)),
+    all(is.finite(data$actual)),
+    setequal(unique(data$model), BASE_MODELS),
+    !anyDuplicated(data[c(KEYS, "model")]),
+    all(month_id(data$target_date) - month_id(data$origin_date) == data$h)
+  )
+
+  coverage <- data %>%
+    group_by(across(all_of(KEYS))) %>%
+    summarise(
+      n_models = n_distinct(model),
+      actual_range = max(actual) - min(actual),
+      .groups = "drop"
+    )
+
+  counts <- data %>% count(model, h)
+  stopifnot(
+    nrow(coverage) == 174L * length(HORIZONS),
+    all(coverage$n_models == length(BASE_MODELS)),
+    all(coverage$actual_range < 1e-10),
+    nrow(counts) == length(BASE_MODELS) * length(HORIZONS),
+    all(counts$n == 174L)
+  )
+
+  invisible(data)
+}
+
+official <- read_forecasts("official")
+validate_forecasts(official)
+
+self <- read_forecasts("self", required = FALSE)
+if (!is.null(self)) validate_forecasts(self)
+
+all_data <- bind_rows(official, self)
+```
+
+## Equal-weight combination
+
+```{r equal-weight}
+combination <- all_data %>%
+  filter(model %in% ML_MODELS) %>%
+  group_by(across(all_of(KEYS))) %>%
+  summarise(
+    forecast = mean(forecast),
+    actual = first(actual),
+    n_models = n_distinct(model),
+    .groups = "drop"
+  )
+
+stopifnot(all(combination$n_models == length(ML_MODELS)))
+
+combination <- combination %>%
+  transmute(across(all_of(KEYS)), model = "COMB_7", forecast, actual)
+
+evaluated <- bind_rows(all_data, combination)
+save_csv(combination, "combined_forecasts.csv")
+```
+
+## Rolling Granger–Ramanathan combination
+
+```{r gr-combination}
+gr_wide <- all_data %>%
+  filter(model %in% ML_MODELS) %>%
+  select(all_of(KEYS), model, forecast) %>%
+  pivot_wider(names_from = model, values_from = forecast) %>%
+  left_join(
+    all_data %>% filter(model == "RW") %>% select(all_of(KEYS), actual),
+    by = KEYS
+  ) %>%
+  arrange(sample, h, target_date)
+
+stopifnot(!anyNA(gr_wide[c(ML_MODELS, "actual")]))
+gr_formula <- reformulate(ML_MODELS, response = "actual")
+
+make_gr <- function(data) {
+  data <- arrange(data, target_date)
+  forecasts <- vector("list", nrow(data))
+
+  for (i in seq_len(nrow(data))) {
+    train <- data %>%
+      filter(target_date < data$origin_date[i]) %>%
+      slice_tail(n = GR_WINDOW)
+
+    if (nrow(train) < GR_WINDOW) next
+
+    X <- model.matrix(gr_formula, data = train)
+    y <- train$actual
+
+    beta <- as.vector(MASS::ginv(X) %*% y)
+
+    X_new <- model.matrix(
+      delete.response(terms(gr_formula)),
+      data = data[i, , drop = FALSE]
+    )
+
+    prediction <- as.numeric(X_new %*% beta)
+
+    forecasts[[i]] <- data[i, KEYS] %>%
+      mutate(
+        model = "COMB_GR",
+        forecast = prediction,
+        actual = data$actual[i]
+      )
+  }
+
+  bind_rows(forecasts)
+}
+
+gr_forecasts <- bind_rows(lapply(group_split(gr_wide, sample, h), make_gr))
+stopifnot(nrow(gr_forecasts) > 0L, !anyNA(gr_forecasts))
+
+show_table(gr_forecasts %>%
+  group_by(sample, h) %>%
+  summarise(N = n(), first_target = min(target_date), last_target = max(target_date), .groups = "drop"))
+
+save_csv(gr_forecasts, "gr_combination_forecasts.csv")
+```
+
+## Forecast accuracy
+
+```{r accuracy}
+calculate_metrics <- function(data) {
+  scores <- data %>%
+    group_by(sample, model, h) %>%
+    summarise(
+      N = n(),
+      MSE = mean((actual - forecast)^2),
+      RMSE = sqrt(MSE),
+      .groups = "drop"
+    )
+
+  benchmarks <- scores %>%
+    filter(model %in% c("RW", "AR_BIC")) %>%
+    select(sample, h, model, MSE) %>%
+    pivot_wider(names_from = model, values_from = MSE, names_prefix = "benchmark_")
+
+  scores %>%
+    left_join(benchmarks, by = c("sample", "h")) %>%
+    mutate(
+      relative_MSE_RW = MSE / benchmark_RW,
+      improvement_pct_RW = 100 * (1 - relative_MSE_RW),
+      relative_MSE_AR = MSE / benchmark_AR_BIC,
+      improvement_pct_AR = 100 * (1 - relative_MSE_AR)
+    ) %>%
+    select(-starts_with("benchmark_")) %>%
+    arrange(sample, h, MSE)
+}
+
+metrics <- calculate_metrics(evaluated)
+show_table(metrics)
+save_csv(metrics, "model_metrics.csv")
+```
+
+## Diebold–Mariano tests
+
+```{r dm-tests}
+dm_hac <- function(d, bandwidth = NULL) {
+  n <- length(d)
+  if (n < 10L || any(!is.finite(d))) {
+    return(c(statistic = NA_real_, p_value = NA_real_))
+  }
+
+  if (is.null(bandwidth)) bandwidth <- round(n^(1/3))
+  bandwidth <- min(as.integer(bandwidth), n - 1L)
+  u <- d - mean(d)
+  lrv <- sum(u^2) / n
+
+  if (bandwidth > 0L) {
+    for (k in seq_len(bandwidth)) {
+      gamma_k <- sum(u[(k + 1L):n] * u[seq_len(n - k)]) / n
+      lrv <- lrv + 2 * (1 - k / (bandwidth + 1)) * gamma_k
+    }
+  }
+
+  if (!is.finite(lrv) || lrv <= 0) {
+    return(c(statistic = NA_real_, p_value = NA_real_))
+  }
+
+  statistic <- mean(d) / sqrt(lrv / n)
+  c(statistic = statistic, p_value = 2 * pnorm(-abs(statistic)))
+}
+
+run_dm <- function(data, benchmark, candidates = NULL, bandwidth = NULL) {
+  reference <- data %>%
+    filter(model == benchmark) %>%
+    select(all_of(KEYS), base_actual = actual, base_forecast = forecast)
+
+  candidates_data <- data %>% filter(model != benchmark)
+  if (!is.null(candidates)) {
+    candidates_data <- candidates_data %>% filter(model %in% candidates)
+  }
+
+  candidates_data %>%
+    inner_join(reference, by = KEYS) %>%
+    arrange(sample, model, h, target_date) %>%
+    mutate(loss_diff = (actual - forecast)^2 - (base_actual - base_forecast)^2) %>%
+    group_by(sample, model, h) %>%
+    group_modify(~ {
+      test <- dm_hac(.x$loss_diff, bandwidth)
+      tibble(
+        N = nrow(.x),
+        mean_loss_diff = mean(.x$loss_diff),
+        DM_statistic = unname(test["statistic"]),
+        p_value = unname(test["p_value"])
+      )
+    }) %>%
+    ungroup() %>%
+    mutate(benchmark = benchmark, .before = 2)
+}
+
+dm_results <- bind_rows(
+  run_dm(evaluated, "RW"),
+  run_dm(evaluated, "AR_BIC")
+) %>%
+  group_by(sample, benchmark) %>%
+  mutate(p_holm = p.adjust(p_value, method = "holm")) %>%
+  ungroup()
+
+combination_dm <- bind_rows(lapply(ML_MODELS, function(model_name) {
+  run_dm(evaluated, benchmark = model_name, candidates = "COMB_7")
+})) %>%
+  group_by(sample) %>%
+  mutate(p_holm = p.adjust(p_value, method = "holm")) %>%
+  ungroup()
+
+show_table(dm_results)
+show_table(combination_dm)
+save_csv(dm_results, "dm_results.csv")
+save_csv(combination_dm, "dm_combination_vs_ml.csv")
+```
+
+## Granger–Ramanathan versus equal weighting
+
+```{r gr-evaluation}
+gr_comparison <- evaluated %>%
+  semi_join(gr_forecasts %>% select(all_of(KEYS)), by = KEYS) %>%
+  bind_rows(gr_forecasts)
+
+gr_metrics <- calculate_metrics(gr_comparison)
+save_csv(gr_metrics, "gr_vs_equal_weight_metrics.csv")
+show_table(gr_metrics %>% filter(model %in% c("COMB_7", "COMB_GR")))
+
+gr_dm <- bind_rows(
+  run_dm(gr_comparison, "COMB_7", "COMB_GR"),
+  run_dm(gr_comparison, "RW", c("COMB_7", "COMB_GR")),
+  run_dm(gr_comparison, "AR_BIC", c("COMB_7", "COMB_GR")),
+  bind_rows(lapply(ML_MODELS, function(model_name) {
+    run_dm(gr_comparison, benchmark = model_name, candidates = "COMB_GR")
+  }))
+) %>%
+  group_by(sample) %>%
+  mutate(p_holm = p.adjust(p_value, method = "holm")) %>%
+  ungroup()
+
+show_table(gr_dm)
+save_csv(gr_dm, "gr_vs_equal_weight_dm.csv")
+```
+
+## Statistical robustness
+
+### HAC bandwidth sensitivity
+
+```{r hac-sensitivity}
+dm_sensitivity <- bind_rows(lapply(c(0L, 3L, 6L, 12L), function(lag) {
+  run_dm(evaluated, "AR_BIC", candidates = c(ML_MODELS, "COMB_7"), bandwidth = lag) %>%
+    mutate(HAC_lags = lag, .before = 1)
+}))
+
+show_table(dm_sensitivity %>% filter(sample == "official", model %in% c("ridge", "COMB_7")))
+save_csv(dm_sensitivity, "dm_hac_sensitivity.csv")
+```
+
+### Loss-differential diagnostics
+
+```{r loss-diagnostics, fig.width=11, fig.height=6}
+loss_differentials <- evaluated %>%
+  filter(sample == "official", model %in% c("AR_BIC", "ridge", "COMB_7")) %>%
+  mutate(squared_error = (actual - forecast)^2) %>%
+  select(h, target_date, model, squared_error) %>%
+  pivot_wider(names_from = model, values_from = squared_error) %>%
+  transmute(
+    h, target_date,
+    `Ridge minus AR(p)` = ridge - AR_BIC,
+    `COMB_7 minus AR(p)` = COMB_7 - AR_BIC
+  ) %>%
+  pivot_longer(-c(h, target_date), names_to = "comparison", values_to = "loss_diff")
+
+plot_dm <- ggplot(loss_differentials, aes(target_date, loss_diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line() +
+  facet_grid(comparison ~ h, scales = "free_y") +
+  labs(x = "Target date", y = "Squared-error loss differential") +
+  theme_minimal()
+
+print(plot_dm)
+ggsave(file.path(OUT, "dm_loss_differentials_official.png"), plot_dm, width = 12, height = 7, dpi = 200)
+```
+
+## Forecast-accuracy figures
+
+```{r figures, fig.width=9, fig.height=5}
+plot_mse <- ggplot(metrics %>% filter(sample == "official"),
+                   aes(h, MSE * 1e6, colour = model)) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  scale_x_continuous(breaks = HORIZONS) +
+  labs(x = "Forecast horizon (months)", y = "MSE (× 10⁻⁶)", colour = "Model") +
+  theme_minimal()
+
+print(plot_mse)
+ggsave(file.path(OUT, "mse_by_horizon_official.png"), plot_mse, width = 10, height = 6, dpi = 200)
+
+plot_zoom <- ggplot(metrics %>% filter(sample == "official", !model %in% c("RW", "post_lasso")),
+                    aes(h, MSE * 1e6, colour = model)) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  scale_x_continuous(breaks = HORIZONS) +
+  labs(x = "Forecast horizon (months)", y = "MSE (× 10⁻⁶)", colour = "Model",
+       title = "Restricted view: RW and Post-LASSO omitted") +
+  theme_minimal()
+
+print(plot_zoom)
+ggsave(file.path(OUT, "mse_by_horizon_zoom_official.png"), plot_zoom, width = 10, height = 6, dpi = 200)
+```
+
+## Self-adjusted CPI robustness
+
+```{r self-robustness}
+if (!is.null(self)) {
+  robustness <- metrics %>%
+    select(sample, model, h, MSE, RMSE,
+           relative_MSE_RW, improvement_pct_RW,
+           relative_MSE_AR, improvement_pct_AR) %>%
+    pivot_wider(
+      names_from = sample,
+      values_from = c(MSE, RMSE,
+                      relative_MSE_RW, improvement_pct_RW,
+                      relative_MSE_AR, improvement_pct_AR)
+    ) %>%
+    arrange(model, h)
+
+  show_table(robustness)
+  save_csv(robustness, "official_vs_self_metrics.csv")
+
+  plot_robustness <- ggplot(
+    metrics %>% filter(model %in% c("RW", "AR_BIC", "COMB_7")),
+    aes(h, MSE * 1e6, colour = model, linetype = sample)
+  ) +
+    geom_line() +
+    geom_point() +
+    scale_x_continuous(breaks = HORIZONS) +
+    facet_wrap(~ model, scales = "free_y") +
+    labs(x = "Forecast horizon (months)", y = "MSE (× 10⁻⁶)") +
+    theme_minimal()
+
+  print(plot_robustness)
+  ggsave(file.path(OUT, "mse_official_vs_self.png"), plot_robustness,
+         width = 10, height = 5, dpi = 200)
+} else {
+  cat("Self-adjusted CPI analysis skipped: input forecasts unavailable.\n")
+}
+```
+
+## US-predictor extension
+
+```{r us-extension}
+us_files <- tibble(
+  path = c(
+    "results/farm-ridge/forecasts_ridge_farm_official_us.csv",
+    "results/farm-ridge/forecasts_ridge_farm_official_uskey.csv",
+    "results/lasso/forecasts_lasso_official_us.csv",
+    "results/lasso/forecasts_lasso_self_us.csv"
+  ),
+  target_sample = c("official", "official", "official", "self"),
+  family = c("ridge_farm", "ridge_farm", "lasso", "lasso")
+) %>%
+  filter(file.exists(path))
+
+read_us <- function(path, target_sample, family) {
+  standardise(read.csv(path), sample = target_sample) %>%
+    mutate(
+      sample = .env$target_sample,
+      model = case_when(
+        family == "lasso" & model == "lasso" ~ "lasso_us",
+        family == "lasso" & model == "post_lasso" ~ "post_lasso_us",
+        TRUE ~ model
+      )
+    ) %>%
+    filter(
+      target_date >= as.Date("2012-02-01"),
+      target_date <= as.Date("2026-07-01")
+    )
+}
+
+if (nrow(us_files) > 0L) {
+
+  variants <- bind_rows(lapply(seq_len(nrow(us_files)), function(i) {
+    read_us(
+      us_files$path[i],
+      us_files$target_sample[i],
+      us_files$family[i]
+    )
+  })) %>%
+    mutate(
+      base_model = case_when(
+        grepl("^post_lasso", model) ~ "post_lasso",
+        grepl("^lasso", model) ~ "lasso",
+        grepl("^ridge", model) ~ "ridge",
+        grepl("^farm", model) ~ "farm",
+        TRUE ~ NA_character_
+      )
+    )
+
+  stopifnot(
+    !anyNA(variants),
+    !anyDuplicated(variants[c(KEYS, "model")])
+  )
+
+  baseline <- all_data %>%
+    filter(model %in% c("lasso", "post_lasso", "ridge", "farm")) %>%
+    select(
+      all_of(KEYS),
+      base_model = model,
+      base_forecast = forecast,
+      base_actual = actual
+    )
+
+  us_pairs <- variants %>%
+    inner_join(
+      baseline,
+      by = c(KEYS, "base_model")
+    )
+
+  coverage <- variants %>%
+    count(sample, model, h, name = "N_US") %>%
+    left_join(
+      us_pairs %>%
+        count(sample, model, h, name = "N_matched"),
+      by = c("sample", "model", "h")
+    ) %>%
+    mutate(N_matched = replace_na(N_matched, 0L))
+
+  show_table(coverage)
+
+  stopifnot(
+    nrow(us_pairs) == nrow(variants),
+    all(coverage$N_US == 174L),
+    all(coverage$N_matched == 174L),
+    all(abs(us_pairs$actual - us_pairs$base_actual) < 1e-10)
+  )
+
+  us_results <- us_pairs %>%
+    group_by(sample, base_model, model, h) %>%
+    summarise(
+      N = n(),
+      MSE_base = mean((base_actual - base_forecast)^2),
+      MSE_US = mean((actual - forecast)^2),
+      relative_MSE = MSE_US / MSE_base,
+      improvement_pct = 100 * (1 - relative_MSE),
+      .groups = "drop"
+    ) %>%
+    rename(
+      baseline = base_model,
+      US_model = model
+    ) %>%
+    arrange(sample, baseline, US_model, h)
+
+  us_dm <- bind_rows(lapply(
+    split(
+      us_pairs,
+      interaction(us_pairs$sample, us_pairs$model, drop = TRUE)
+    ),
+    function(pair) {
+
+      base_name <- unique(pair$base_model)
+      us_name <- unique(pair$model)
+
+      comparison <- bind_rows(
+        pair %>%
+          transmute(
+            across(all_of(KEYS)),
+            model = base_name,
+            forecast = base_forecast,
+            actual = base_actual
+          ),
+        pair %>%
+          transmute(
+            across(all_of(KEYS)),
+            model = us_name,
+            forecast,
+            actual
+          )
+      )
+
+      run_dm(
+        comparison,
+        benchmark = base_name,
+        candidates = us_name
+      )
+    }
+  )) %>%
+    group_by(sample) %>%
+    mutate(p_holm = p.adjust(p_value, method = "holm")) %>%
+    ungroup()
+
+  show_table(us_results)
+  show_table(us_dm)
+
+  save_csv(us_results, "us_extension_metrics.csv")
+  save_csv(us_dm, "us_extension_dm.csv")
+
+} else {
+  cat("US-predictor extension skipped: forecast files unavailable.\n")
+}
+```

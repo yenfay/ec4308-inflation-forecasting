@@ -18,6 +18,9 @@ library(here)
 
 ```{r config}
 DATASET <- "extended_data_self"   # "main_data_official" / "main_data_self" / "extended_data_official" / "extended_data_self" 
+USE_US_KEY <- FALSE
+US_KEY <- c("US_CPIAUCSL", "US_OILPRICEx", "US_INDPRO", "US_UNRATE", "US_FEDFUNDS")
+RUN_NAME <- if (USE_US_KEY) paste0(DATASET, "_uskey") else DATASET
 
 HORIZONS <- c(1, 3, 6, 12)
 OOS_START <- if (grepl("self", DATASET)) as.Date("2001-02-01") else as.Date("2012-02-01")
@@ -46,6 +49,12 @@ dates <- df$date
 
 pred_cols <- grep("^(CAN|US)_", names(df), value = TRUE)
 pred_cols <- setdiff(pred_cols, "US_ACOGNO")
+
+if (USE_US_KEY) {
+  stopifnot(grepl("extended", DATASET))
+  pred_cols <- c(grep("^CAN_", names(df), value = TRUE), US_KEY)
+}
+
 
 Y <- as.matrix(df[, c("inflation_mom", pred_cols)])
 Y <- zoo::na.locf(Y, na.rm = FALSE)
@@ -131,7 +140,7 @@ system.time({
   r <- lasso.rolling.window(tail(Y, 254), nprev = 14, dates = tail(dates, 254), lag = 1)
 })
 
-anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 5 x 2, 5 x 1641 (main) or 5 x 2141 (extended)
+anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 14 x 2, 14 x 1641 (main) or 5 x 2141 (extended)
 r$support                                  # any row with empty = 0 and large = 0?
 data.frame(origin = r$origin_date, target = r$target_date)        # as dates
 ```
@@ -143,7 +152,7 @@ system.time({
   r <- lasso.rolling.window(tail(Y, 254), nprev = 14, dates = tail(dates, 254), lag = 12)
 })
 
-anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 5 x 2, 5 x 1641 (main) or 5 x 2141 (extended)
+anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 14 x 2, 14 x 1641 (main) or 5 x 2141 (extended)
 r$support                                  # any row with empty = 0 and large = 0?
 data.frame(origin = r$origin_date, target = r$target_date)        # as dates
 ```
@@ -160,7 +169,7 @@ dir.create(here::here(OUT_DIR), recursive = TRUE, showWarnings = FALSE)
 for (h in HORIZONS) {
   cat("horizon", h, "\n")
   results[[paste0("h", h)]] <- lasso.rolling.window(Y, nprev, dates, indice = 1, lag = h, retune.every = RETUNE_EVERY)
-  saveRDS(results, here::here(OUT_DIR, paste0("results_lasso_", DATASET, ".rds")))
+  saveRDS(results, here::here(OUT_DIR, paste0("results_lasso_", RUN_NAME, ".rds")))
 }
 
 sapply(results, function(r) r$errors)
@@ -322,17 +331,21 @@ stopifnot(nrow(forecast_long) == length(HORIZONS) * 2 * nprev,
 
 # save the table through here::here()
 dir.create(here::here(OUT_DIR), recursive = TRUE, showWarnings = FALSE)
-saveRDS(forecast_long, here::here(OUT_DIR, paste0("forecasts_", DATASET, ".rds")))
+saveRDS(forecast_long, here::here(OUT_DIR, paste0("forecasts_", RUN_NAME, ".rds")))
 ```
 
 ## Write results to CSV
 
 ```{r}
 samples <- c(official = "main_data_official", self = "main_data_self",
-             official_us = "extended_data_official", self_us = "extended_data_self")
+             official_us = "extended_data_official", self_us = "extended_data_self",
+             official_uskey = "extended_data_official_uskey", self_uskey = "extended_data_self_uskey"
+)
 
 for (s in names(samples)) {
-  f <- readRDS(here::here(OUT_DIR, paste0("forecasts_", samples[[s]], ".rds")))
+  path <- here::here(OUT_DIR, paste0("forecasts_", samples[[s]], ".rds"))
+  if (!file.exists(path)) next
+  f <- readRDS(path)
   f$sample <- s
   f <- f[, c("sample", "model", "h", "origin_date", "target_date", "forecast", "actual")]
   write.csv(f, here::here(OUT_DIR, paste0("forecasts_lasso_", s, ".csv")), row.names = FALSE)
@@ -341,7 +354,9 @@ for (s in names(samples)) {
 
 ```{r}
 for (s in names(samples)) {
-  res <- readRDS(here::here(OUT_DIR, paste0("results_lasso_", samples[[s]], ".rds")))
+  path <- here::here(OUT_DIR, paste0("results_lasso_", samples[[s]], ".rds"))
+  if (!file.exists(path)) next
+  res <- readRDS(path)
 
   diag <- do.call(rbind, lapply(names(res), function(nm) {
     r <- res[[nm]]

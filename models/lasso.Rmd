@@ -18,7 +18,7 @@ library(here)
 
 ```{r config}
 DATASET <- "extended_data_self"   # "main_data_official" / "main_data_self" / "extended_data_official" / "extended_data_self" 
-USE_US_KEY <- FALSE
+USE_US_KEY <- TRUE
 US_KEY <- c("US_CPIAUCSL", "US_OILPRICEx", "US_INDPRO", "US_UNRATE", "US_FEDFUNDS")
 RUN_NAME <- if (USE_US_KEY) paste0(DATASET, "_uskey") else DATASET
 
@@ -127,8 +127,9 @@ nrow(X); ncol(X)
 full <- glmnet::glmnet(X, y, alpha = 1)
 L <- cv_indices(n = nrow(X), h = lag, V = 50)$L
 system.time({pos <- cv_lambda(X, y, h = lag, V = 50, lambda.grid = full$lambda)})
-best.lambda <- full$lambda[pos]
-L; best.lambda
+# positions and lambdas for LASSO and Post-LASSO
+best.lambda <- setNames(full$lambda[pos], names(pos))
+L; pos; best.lambda
 ```
 
 # 7. Smoke test
@@ -140,8 +141,8 @@ system.time({
   r <- lasso.rolling.window(tail(Y, 254), nprev = 14, dates = tail(dates, 254), lag = 1)
 })
 
-anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 14 x 2, 14 x 1641 (main) or 5 x 2141 (extended)
-r$support                                  # any row with empty = 0 and large = 0?
+anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 14 x 2, 14 x 1641 (main) or 14 x 2141 (extended)
+r$support                                  # any row with empty.post = 0 and large.post = 0?
 data.frame(origin = r$origin_date, target = r$target_date)        # as dates
 ```
 
@@ -152,8 +153,8 @@ system.time({
   r <- lasso.rolling.window(tail(Y, 254), nprev = 14, dates = tail(dates, 254), lag = 12)
 })
 
-anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 14 x 2, 14 x 1641 (main) or 5 x 2141 (extended)
-r$support                                  # any row with empty = 0 and large = 0?
+anyNA(r$pred); dim(r$pred); dim(r$coef)    # no NAs, 14 x 2, 14 x 1641 (main) or 14 x 2141 (extended)
+r$support                                  # any row with empty.post = 0 and large.post = 0?
 data.frame(origin = r$origin_date, target = r$target_date)        # as dates
 ```
 
@@ -189,7 +190,11 @@ for (h in HORIZONS) {
             length(r$actual) == nprev, !anyNA(r$actual),
             length(r$target_date) == nprev, length(r$origin_date) == nprev,
             !anyNA(r$lambda))
-  stopifnot(all(diff(r$pos)[seq_along(diff(r$pos)) %% RETUNE_EVERY != 0] == 0))
+  # positions only change at re-tunes, for both models
+  for (m in colnames(r$pos)) {
+    d.pos <- diff(r$pos[, m])
+    stopifnot(all(d.pos[seq_along(d.pos) %% RETUNE_EVERY != 0] == 0))
+  }
   cat("h =", h, ": forecasts OK\n")
 }
 
@@ -265,32 +270,37 @@ for (h in HORIZONS) {
     # predictors at the forecast origin (newest four rows of the window)
     x.out <- as.numeric(t(Y2[n.w - 0:3, ]))
     
-    # LASSO refit, predicted at the stored lambda
+    # LASSO refit, predicted at the stored LASSO lambda
     fit <- glmnet(X.hand, y.hand, alpha = 1)
-    lam <- r$lambda[k]
-    stopifnot(min(abs(fit$lambda - lam)) < 1e-10)
+    lam <- r$lambda[k, "lasso"]
+    lam.post <- r$lambda[k, "post"]
+    stopifnot(min(abs(fit$lambda - lam)) < 1e-10,
+              min(abs(fit$lambda - lam.post)) < 1e-10)
     beta.hand <- as.numeric(coef(fit, s = lam))
     pred.lasso <- as.numeric(predict(fit, newx = matrix(x.out, nrow = 1), s = lam))
-    
-    # Post-LASSO by hand with lm(), following the support rules
     support <- which(beta.hand[-1] != 0)
-    if (length(support) == 0) {
+    
+    # Post-LASSO by hand with lm() on the support at its own lambda, following the support rules
+    beta.post.hand <- as.numeric(coef(fit, s = lam.post))
+    support.post <- which(beta.post.hand[-1] != 0)
+    if (length(support.post) == 0) {
       pred.post <- mean(y.hand)
-    } else if (length(support) > nrow(X.hand) / 2) {
-      pred.post <- pred.lasso
+    } else if (length(support.post) > nrow(X.hand) / 2) {
+      pred.post <- as.numeric(predict(fit, newx = matrix(x.out, nrow = 1), s = lam.post))
     } else {
-      dat <- data.frame(y = y.hand, X.hand[, support, drop = FALSE])
+      dat <- data.frame(y = y.hand, X.hand[, support.post, drop = FALSE])
       ols <- lm(y ~ ., data = dat)
       b <- coef(ols)
       b[is.na(b)] <- 0
-      pred.post <- sum(b * c(1, x.out[support]))
+      pred.post <- sum(b * c(1, x.out[support.post]))
     }
     
-    # match stored forecasts, coefficients and support size
+    # match stored forecasts, coefficients and support sizes
     stopifnot(abs(pred.lasso - r$pred[k, "lasso"]) < tol,
               abs(pred.post - r$pred[k, "post"]) < tol,
               max(abs(beta.hand - r$coef[k, ])) < tol,
-              length(support) == r$support[k, "size"])
+              length(support) == r$support[k, "size.lasso"],
+              length(support.post) == r$support[k, "size.post"])
     cat("h =", h, "| origin", format(r$origin_date[k]), ": hand refit matches\n")
   }
 }
@@ -362,7 +372,7 @@ for (s in names(samples)) {
     r <- res[[nm]]
     data.frame(sample = s, h = as.numeric(sub("h", "", nm)),
                origin_date = r$origin_date, target_date = r$target_date,
-               lambda = r$lambda, pos = r$pos, r$support)
+               lambda = r$lambda, pos = r$pos, r$support)   # lambda.lasso, lambda.post, pos.lasso, pos.post, ...
   }))
 
   write.csv(diag, here::here(OUT_DIR, paste0("tuning_path_lasso_", s, ".csv")), row.names = FALSE)
@@ -410,8 +420,8 @@ for (h in HORIZONS) {
   e.lasso <- r$actual - r$pred[, "lasso"]
   e.post <- r$actual - r$pred[, "post"]
   
-  # origins where Post-LASSO is the OLS refit on the support
-  ols <- r$support[, "empty"] == 0 & r$support[, "large"] == 0
+  # origins where Post-LASSO is the OLS refit on its own support
+  ols <- r$support[, "empty.post"] == 0 & r$support[, "large.post"] == 0
   
   lp.tab <- rbind(lp.tab,
                   data.frame(h = h,
@@ -419,6 +429,7 @@ for (h in HORIZONS) {
                              RMSE_post = sqrt(mean(e.post^2)),
                              ratio_post_to_lasso = sqrt(mean(e.post^2)) / sqrt(mean(e.lasso^2)),
                              n_ols = sum(ols),
+                             n_large_post = sum(r$support[, "large.post"] == 1),
                              ratio_ols_only = sqrt(mean(e.post[ols]^2)) / sqrt(mean(e.lasso[ols]^2))))
 }
 lp.tab
@@ -430,16 +441,21 @@ lp.tab
 par(mfrow = c(2, 2))
 for (h in HORIZONS) {
   r <- results[[paste0("h", h)]]
-  plot(r$origin_date, r$support[, "size"], type = "l",
+  plot(r$origin_date, r$support[, "size.lasso"], type = "l",
+       ylim = range(r$support[, c("size.lasso", "size.post")]),
        xlab = "origin date", ylab = "selected variables", main = paste("h =", h))
+  lines(r$origin_date, r$support[, "size.post"], col = "red")
+  legend("topleft", legend = c("LASSO", "Post-LASSO"), col = c("black", "red"), lty = 1, bty = "n")
 }
 par(mfrow = c(1, 1))
 
-# summary of support size by horizon
+# summary of support size by horizon and model
 size.tab <- NULL
 for (h in HORIZONS) {
-  s <- results[[paste0("h", h)]]$support[, "size"]
-  size.tab <- rbind(size.tab, data.frame(h = h, mean = mean(s), min = min(s), max = max(s)))
+  for (m in c("lasso", "post")) {
+    s <- results[[paste0("h", h)]]$support[, paste0("size.", m)]
+    size.tab <- rbind(size.tab, data.frame(h = h, model = m, mean = mean(s), min = min(s), max = max(s)))
+  }
 }
 size.tab
 ```
@@ -449,13 +465,16 @@ size.tab
 flag.tab <- NULL
 for (h in HORIZONS) {
   s <- results[[paste0("h", h)]]$support
-  flag.tab <- rbind(flag.tab,
-                    data.frame(h = h,
-                               n_empty = sum(s[, "empty"] == 1),
-                               n_large = sum(s[, "large"] == 1),
-                               share_empty = mean(s[, "empty"] == 1),
-                               share_large = mean(s[, "large"] == 1),
-                               of = nprev))
+  for (m in c("lasso", "post")) {
+    flag.tab <- rbind(flag.tab,
+                      data.frame(h = h,
+                                 model = m,
+                                 n_empty = sum(s[, paste0("empty.", m)] == 1),
+                                 n_large = sum(s[, paste0("large.", m)] == 1),
+                                 share_empty = mean(s[, paste0("empty.", m)] == 1),
+                                 share_large = mean(s[, paste0("large.", m)] == 1),
+                                 of = nprev))
+  }
 }
 flag.tab
 
@@ -463,25 +482,28 @@ flag.tab
 run.tab <- NULL
 for (h in HORIZONS) {
   r <- results[[paste0("h", h)]]
-  e <- r$support[, "empty"] == 1
-  rl <- rle(e)
-  ends <- cumsum(rl$lengths)
-  starts <- ends - rl$lengths + 1
-  hit <- which(rl$values)
-  if (length(hit) > 0) {
-    run.tab <- rbind(run.tab,
-                     data.frame(h = h,
-                                first_origin = r$origin_date[starts[hit]],
-                                last_origin = r$origin_date[ends[hit]],
-                                length = rl$lengths[hit]))
+  for (m in c("lasso", "post")) {
+    e <- r$support[, paste0("empty.", m)] == 1
+    rl <- rle(e)
+    ends <- cumsum(rl$lengths)
+    starts <- ends - rl$lengths + 1
+    hit <- which(rl$values)
+    if (length(hit) > 0) {
+      run.tab <- rbind(run.tab,
+                       data.frame(h = h,
+                                  model = m,
+                                  first_origin = r$origin_date[starts[hit]],
+                                  last_origin = r$origin_date[ends[hit]],
+                                  length = rl$lengths[hit]))
+    }
   }
 }
 run.tab
 
-# stripe plot: red marks origins with an empty support, one row per horizon
+# stripe plot: red marks origins with an empty Post-LASSO support, one row per horizon
 dts <- c(results$h12$origin_date, results$h1$origin_date)
 plot(NULL, xlim = range(dts), ylim = c(0.5, length(HORIZONS) + 0.5),
-     xaxt = "n", yaxt = "n", xlab = "origin date", ylab = "", main = "Empty LASSO support")
+     xaxt = "n", yaxt = "n", xlab = "origin date", ylab = "", main = "Empty Post-LASSO support")
 axis(2, at = seq_along(HORIZONS), labels = paste("h =", HORIZONS), las = 1)
 
 # ticks labelled as years
@@ -490,7 +512,7 @@ axis(1, at = yrs, labels = format(yrs, "%Y"))
 
 for (k in seq_along(HORIZONS)) {
   r <- results[[paste0("h", HORIZONS[k])]]
-  e <- r$support[, "empty"] == 1
+  e <- r$support[, "empty.post"] == 1
   if (any(e)) points(r$origin_date[e], rep(k, sum(e)), col = "red", pch = 15)
 }
 ```

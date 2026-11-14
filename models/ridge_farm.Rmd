@@ -34,7 +34,7 @@ output: html_document
 **Official (primary)**
 
 | h   | Training set      | Validation set    | Obs | Test set          | Forecasts |
-|-----|-------------------|-------------------|-----|-------------------|-----------|
+|------------|------------|------------|------------|------------|------------|
 | 1   | 1992-02 → 2007-11 | 2007-12 → 2012-01 | 50  | 2012-02 → 2026-07 | 174       |
 | 2   | 1992-02 → 2007-09 | 2007-11 → 2011-12 | 50  | 2012-02 → 2026-07 | 174       |
 | 3   | 1992-02 → 2007-07 | 2007-10 → 2011-11 | 50  | 2012-02 → 2026-07 | 174       |
@@ -51,7 +51,7 @@ output: html_document
 **Self-adjusted (robustness: longer period)**
 
 | h   | Training set      | Validation set    | Obs | Test set          | Forecasts |
-|-----|-------------------|-------------------|-----|-------------------|-----------|
+|------------|------------|------------|------------|------------|------------|
 | 1   | 1981-02 → 1996-11 | 1996-12 → 2001-01 | 50  | 2001-02 → 2026-07 | 306       |
 | 2   | 1981-02 → 1996-09 | 1996-11 → 2000-12 | 50  | 2001-02 → 2026-07 | 306       |
 | 3   | 1981-02 → 1996-07 | 1996-10 → 2000-11 | 50  | 2001-02 → 2026-07 | 306       |
@@ -70,7 +70,7 @@ The "Alignment check" chunk below prints these tables from the actual data files
 **Parameter grids**
 
 | Parameter | Model | Values considered | Chosen by |
-|----|----|----|----|
+|------------------|------------------|------------------|------------------|
 | λ (L2) | Ridge | 100 log-spaced values from 10² λ_max down to 10⁻⁶ λ_max (solved exactly, see below) | Recursive validation (50 months), per horizon |
 | λ (L1) | FARM sparse step | 100 log-spaced values from λ_max down to 10⁻² λ_max (glmnet's default range), one grid per K | Jointly with K, recursive validation (50 months), per horizon |
 | K (factors) | FARM | 1, 2, …, K_max, with K_max set from the training-set scree plot (see below) | Jointly with λ, same validation, per horizon |
@@ -104,7 +104,7 @@ The "Alignment check" chunk below prints these tables from the actual data files
 ## Specification and deviations from Medeiros
 
 | Item | Medeiros | Here | Why |
-|----|----|----|----|
+|------------------|------------------|------------------|------------------|
 | Ridge λ | n/a | Recursive validation | Information criteria need degrees of freedom; `ic.glmnet` counts non-zero coefficients, which never changes for ridge, so BIC always picks the smallest λ |
 | LASSO λ in FARM | BIC | Recursive validation | BIC saturated on official data (\~238 variables selected with \~236 observations); Fan, Lou & Yu also use cross-validation |
 | Number of factors | Fixed at 4 | Recursive validation (jointly with λ) over 1, …, K_max | Chosen by forecast performance, as for PCR in the lecture; K_max is set from the training-set scree plot |
@@ -168,7 +168,7 @@ N_PC           <- 4      # PCs added to ridge (fixed, Medeiros)
 
 # ===== Run control =====
 MODELS_TO_RUN <- c("ridge", "farm")
-MODELS_TO_RUN <- character(0) # just load saved results
+MODELS_TO_RUN <- character(0) # just load saved results (RDS files)
 RUN_TAG       <- "main"                    # label for result files
 RUN_US_EXT    <- TRUE                 # TRUE = also run the US extension
 
@@ -426,6 +426,7 @@ The PCA FARM uses, on the training set common to every horizon (the h = 12 train
 
 - **Scree plot (variance explained per component):** where it flattens, extra components add little. Use it to set `FARM_K_MAX` in the "Set K_max" chunk below; recursive validation picks K within 1, …, K_max for each horizon.
 - **Cumulative variance explained:** how much of the predictors' co-movement the first K components capture. A slow, steady climb means a weak factor structure (variation spread across many series).
+- **Loadings (reference only)**: the 10 lagged predictors with the largest weights on PC1 and PC2 (\_lag0 = most recent month). PCA is used for dimension reduction, not interpretation; signs are arbitrary and the factors are re-estimated in every window
 
 ```{r factors}
 training_pca <- function(s) {
@@ -449,11 +450,19 @@ show_pca <- function(pc, label, n_show = 40) {
        xlab = "Number of components", ylab = "Cumulative share of variance explained", ylim = c(0, 1))
 }
 
+top_load <- function(pc, j, n = 10) {               # largest loadings on factor j (reference only)
+  l <- pc$rotation[, j]
+  round(l[order(-abs(l))][1:n], 3)
+}
+
 for (nm in names(SAMPLES)) {
   cat("\n=====", nm, "=====\n")
   pc <- training_pca(load_sample(SAMPLES[[nm]]))
   show_pca(pc, nm)
+  cat("PC1 top loadings (reference only):\n"); print(top_load(pc, 1))
+  cat("PC2 top loadings (reference only):\n"); print(top_load(pc, 2))
 }
+
 ```
 
 **Scree Plot Interpretation:**
@@ -638,6 +647,39 @@ for (nm in c("official", "self")) {
 }
 ```
 
+### Series selected by FARM's LASSO (appendix, reference only)
+
+At each yearly re-validation date (h = 1), the idiosyncratic series FARM's LASSO keeps, rebuilt from the saved K and λ (no re-estimation). `_lag0` = most recent month. For reference only, not a causal interpretation.
+
+```{r farm-selected}
+farm_selected <- function(s, r, h_show = 1) {
+  p    <- r$path[r$path$model == "farm" & r$path$h == h_show, ]
+  revs <- seq(1, s$nprev, by = RETUNE_EVERY)         # one test date per re-validation (each February)
+  rows <- lapply(revs, function(k) {
+    t    <- WINDOW + k
+    Ysub <- s$Y[train_rows(t, h_show), , drop = FALSE]
+    X    <- design(Ysub, h_show)$X
+    nms  <- paste0(rep(colnames(Ysub), N_LAGS), "_lag", rep(0:(N_LAGS - 1), each = ncol(Ysub)))
+    nms  <- nms[apply(X, 2, sd) > 0]                  # same columns FARM keeps
+    sp   <- farm_split(farm_inputs(Ysub, h_show), p$K[k])
+    g    <- log_grid(lambda_max(sp$U, sp$r), LASSO_RANGE, LASSO_N_LAMBDA)
+    b    <- as.matrix(coef(glmnet(sp$U, sp$r, alpha = 1, lambda = g), s = g[p$lambda_pos[k]]))[-1, 1]
+    sel  <- nms[b != 0]
+    stopifnot(length(sel) == p$nsel[k])               # matches the main run
+    data.frame(date = fmt(s$dates[t]), K = p$K[k], n_selected = length(sel),
+               selected = paste(sel, collapse = ", "))
+  })
+  do.call(rbind, rows)
+}
+
+sel_off <- farm_selected(load_sample(SAMPLES[["official"]]), res_off)
+print(sel_off[, c("date", "K", "n_selected")], row.names = FALSE)
+
+# How often each series was selected (any lag) across the yearly re-validations
+series <- lapply(strsplit(sel_off$selected, ", "), function(v) unique(sub("_lag[0-9]+$", "", v[nzchar(v)])))
+head(sort(table(unlist(series)), decreasing = TRUE), 10)
+```
+
 ## US extension (all FRED-MD series)
 
 Uses `extended_data_official.rds` and `extended_data_self.rds`, which add **all** FRED-MD series (`US_*`) to the Canadian predictors of each sample; the basket can be trimmed later by listing series in `US_BASKET`. Same window, dates, grids and tuning procedure; parameters are re-tuned on the extended predictor set. US series with gaps at the end are filled with the last available value; any still missing at the start of the sample are dropped (the names are printed; the self sample starts in 1981, so it may drop more). Set `RUN_US_EXT <- TRUE` in the settings chunk to run it (both chunks below do nothing while it is `FALSE`).
@@ -649,7 +691,12 @@ if (RUN_US_EXT) {
   US_BASKET <- "all"                       # all FRED-MD series; to trim: c("US_FEDFUNDS", "US_INDPRO", ...)
   US_FILES  <- c(official = "extended_data_official.rds", self = "extended_data_self.rds")
   ext <- lapply(US_FILES, load_sample, us_vars = US_BASKET)
-  for (nm in names(ext)) show_pca(training_pca(ext[[nm]]), paste(nm, "+ US"))
+    for (nm in names(ext)) {
+    pc_us <- training_pca(ext[[nm]])
+    show_pca(pc_us, paste(nm, "+ US"))
+    cat("PC1 top loadings (reference only):\n"); print(top_load(pc_us, 1))
+    cat("PC2 top loadings (reference only):\n"); print(top_load(pc_us, 2))
+    }
 }
 ```
 

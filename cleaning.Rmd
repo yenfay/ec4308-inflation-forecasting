@@ -53,7 +53,7 @@ Outputs have merged the variables into the following
 ```{r}
 # install packages, should only run once
 # install.packages(c("seasonal", "x13binary", "readr", "dplyr", "ggplot2", 
-#                  "tidyr", "lubridate"), repos = "https://cloud.r-project.org")
+#                  "tidyr", "lubridate", "patchwork"), repos = "https://cloud.r-project.org")
 
 library(seasonal)
 library(dplyr)
@@ -61,6 +61,8 @@ library(readr)
 library(ggplot2)
 library(tidyr)
 library(lubridate)
+library(patchwork)
+library(knitr)
 ```
 
 ## Canadian Macroeconomic indicators data
@@ -278,30 +280,108 @@ ggplot(comparison, aes(x = date)) +
 ```
 
 ```{r}
-# quantitative analysis
-valid <- comparison %>%
+cpi_compare <- main_data_self %>%
+  select(
+    date,
+    cpi_self = cpi,
+    inflation_self = inflation_mom
+  ) %>%
+  inner_join(
+    main_data_official %>%
+      select(
+        date,
+        cpi_official = cpi,
+        inflation_official = inflation_mom
+      ),
+    by = "date"
+  )
+
+# Panel A: CPI levels
+cpi_levels <- cpi_compare %>%
+  select(date, cpi_self, cpi_official) %>%
+  pivot_longer(
+    -date,
+    names_to = "series",
+    values_to = "cpi"
+  )
+
+p_cpi_levels <- ggplot(
+  cpi_levels,
+  aes(date, cpi, color = series)
+) +
+  geom_line(linewidth = 0.6) +
+  labs(
+    title = "CPI Levels",
+    x = "Year",
+    y = "CPI Index",
+    color = "Series"
+  ) +
+  theme_minimal()
+
+# Panel B: Monthly inflation
+cpi_inflation <- cpi_compare %>%
+  select(
+    date,
+    inflation_self,
+    inflation_official
+  ) %>%
+  pivot_longer(
+    -date,
+    names_to = "series",
+    values_to = "inflation"
+  )
+
+p_cpi_inflation <- ggplot(
+  cpi_inflation,
+  aes(date, inflation * 100, color = series)
+) +
+  geom_line(linewidth = 0.5) +
+  labs(
+    title = "Monthly Log Inflation",
+    x = "Year",
+    y = "Monthly inflation (%)",
+    color = "Series"
+  ) +
+  theme_minimal()
+
+# Combine panels
+library(patchwork)
+
+p_cpi_comparison <-
+  p_cpi_levels / p_cpi_inflation +
+  plot_annotation(
+    title = "Comparison of Canadian CPI Seasonal Adjustment"
+  )
+
+print(p_cpi_comparison)
+```
+
+```{r}
+sa_errors <- cpi_compare %>%
   filter(
     !is.na(inflation_self),
     !is.na(inflation_official)
+  ) %>%
+  mutate(
+    difference = 100 *
+      (inflation_self - inflation_official)
   )
 
-errors <- valid$inflation_self -
-          valid$inflation_official
+sa_stats <- sa_errors %>%
+  summarise(
+    N = n(),
+    MAE = mean(abs(difference)),
+    RMSE = sqrt(mean(difference^2)),
+    Bias = mean(difference),
+    Correlation = cor(
+      inflation_self,
+      inflation_official
+    )
+  )
 
-mae <- mean(abs(errors))
-rmse <- sqrt(mean(errors^2))
-bias <- mean(errors)
-
-correlation <- cor(
-  valid$inflation_self,
-  valid$inflation_official
-)
-
-data.frame(
-  MAE = mae,
-  RMSE = rmse,
-  Bias = bias,
-  Correlation = correlation
+kable(
+  sa_stats,
+  digits = 4,
 )
 ```
 

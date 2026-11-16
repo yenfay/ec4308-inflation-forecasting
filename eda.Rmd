@@ -13,6 +13,7 @@ library(ggplot2)
 library(tidyr)
 library(lubridate)
 library(zoo)
+library(knitr)
 ```
 
 ```{r}
@@ -109,6 +110,45 @@ missing_by_month <- extended_data_self %>%
 print(missing_by_month, n = Inf)
 ```
 
+```{r}
+us_cols <- grep(
+  "^US_",
+  names(extended_data_official),
+  value = TRUE
+)
+
+us_data <- extended_data_official %>%
+  select(date, all_of(us_cols))
+
+missing_by_variable <- colSums(
+  is.na(us_data[, us_cols, drop = FALSE])
+)
+
+fred_summary <- data.frame(
+  Measure = c(
+    "Total US predictors",
+    "Complete US predictors",
+    "Predictors with missing values",
+    "Maximum missing observations per predictor",
+    "Months with at least one missing predictor"
+  ),
+  Value = c(
+    length(us_cols),
+    sum(missing_by_variable == 0),
+    sum(missing_by_variable > 0),
+    max(missing_by_variable),
+    sum(rowSums(is.na(
+      us_data[, us_cols, drop = FALSE]
+    )) > 0)
+  )
+)
+
+kable(
+  fred_summary,
+  caption = "Table A2. FRED-MD Missingness Summary"
+)
+```
+
 ## Compare self-adjusted seasonality and officially adjusted main_data
 
 ```{r}
@@ -129,7 +169,7 @@ inflation_compare %>%
   ggplot(aes(date, inflation * 100, color = series)) +
   geom_line(linewidth = 0.5, alpha = 0.8) +
   labs(
-    title = "Canadian Monthly Inflation: Self vs Official",
+    title = "Canadian Monthly Inflation: Self-Adjusted vs Officially-Adjusted",
     x = "Year",
     y = "Monthly Log Inflation (%)",
     color = "CPI Adjustment"
@@ -248,10 +288,110 @@ volatility_official <- main_data_official %>%
 
 ggplot(volatility_official, aes(date, rolling_sd_12 * 100)) +
   geom_line() +
+  geom_vline(
+    xintercept = as.Date("2012-02-01"),
+    linetype = "dashed",
+    color = "firebrick"
+  ) +
   labs(
     title = "12-Month Rolling Volatility of Canadian Inflation (Officially-adjusted CPI)",
     x = "Year",
     y = "Rolling SD (monthly percentage points)"
   ) +
   theme_minimal()
+```
+
+```{r}
+inflation_stats <- main_data_official %>%
+  mutate(
+    period = case_when(
+      date < as.Date("2020-01-01") ~ "1992-2019",
+      date <= as.Date("2022-12-01") ~ "2020-2022",
+      TRUE ~ "2023-2026"
+    ),
+    inflation_pct = inflation_mom * 100
+  ) %>%
+  group_by(period) %>%
+  summarise(
+    N = sum(!is.na(inflation_pct)),
+    Mean = mean(inflation_pct, na.rm = TRUE),
+    Median = median(inflation_pct, na.rm = TRUE),
+    SD = sd(inflation_pct, na.rm = TRUE),
+    Min = min(inflation_pct, na.rm = TRUE),
+    Max = max(inflation_pct, na.rm = TRUE),
+    AC1 = cor(
+      inflation_pct[-1],
+      inflation_pct[-length(inflation_pct)],
+      use = "complete.obs"
+    ),
+    AC12 = cor(
+      inflation_pct[-(1:12)],
+      inflation_pct[
+        1:(length(inflation_pct) - 12)
+      ],
+      use = "complete.obs"
+    ),
+    .groups = "drop"
+  )
+
+knitr::kable(inflation_stats, digits = 3)
+```
+
+```{r}
+p_inflation <- main_data_official %>%
+  filter(!is.na(inflation_mom)) %>%
+  ggplot(
+    aes(date, inflation_mom * 100)
+  ) +
+  geom_line(linewidth = 0.5) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dotted"
+  ) +
+  geom_vline(
+    xintercept = as.Date("2012-02-01"),
+    linetype = "dashed",
+    color = "firebrick"
+  ) +
+  labs(
+    title = "Canadian Monthly CPI Inflation",
+    subtitle = "Official seasonally adjusted CPI",
+    x = "Year",
+    y = "Monthly log inflation (%)"
+  ) +
+  theme_minimal()
+
+print(p_inflation)
+```
+
+```{r}
+inflation_stats <- main_data_official %>%
+  filter(!is.na(inflation_mom)) %>%
+  mutate(
+    inflation_pct = inflation_mom * 100,
+    period = case_when(
+      date < as.Date("2012-02-01") ~ "1992-2012",
+      date < as.Date("2020-01-01") ~ "2012-2019",
+      TRUE ~ "2020-2026"
+    )
+  ) %>%
+  group_by(period) %>%
+  summarise(
+    N = n(),
+    Mean = mean(inflation_pct),
+    SD = sd(inflation_pct),
+    Min = min(inflation_pct),
+    Max = max(inflation_pct),
+    AC1 = cor(
+      inflation_pct[-1],
+      inflation_pct[-length(inflation_pct)]
+    ),
+    .groups = "drop"
+  )
+
+knitr::kable(
+  inflation_stats,
+  digits = 3,
+  caption = "Descriptive Statistics of Canadian Monthly Inflation"
+)
 ```

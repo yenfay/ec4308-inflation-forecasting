@@ -22,6 +22,7 @@ N_LAGS        <- 4         # 4 lags of every predictor
 N_VAL         <- 50        # Validation months (latest 50 with known outcomes)
 RETUNE_EVERY  <- 12        # Re-validate once every 12 months (yearly)
 SEED          <- 456857
+set.seed(SEED)
 ```
 
 # Target datasets (main: official; robustness: self)
@@ -155,7 +156,7 @@ xgb_candidates <- function(Ysub, h) {
   for (depth in XGB_DEPTHS) {
     m <- xgb.train(make_params(depth), xgb.DMatrix(d$X, label = d$y), nrounds = XGB_NMAX)
     for (k in XGB_KS) {
-      preds_matrix[1, col_idx] <- predict(m, xgb.DMatrix(d$x_out), iterationrange = c(1, k))
+      preds_matrix[1, col_idx] <- predict(m, xgb.DMatrix(d$x_out), iteration_range = c(1, k))
       col_idx <- col_idx + 1
     }
   }
@@ -173,8 +174,11 @@ library(pbapply)
 candidate_errors_ml <- function(model, s, h) {
   months <- (WINDOW + 1 - h - N_VAL + 1):(WINDOW + s$nprev)
   
-  # Setup cluster across all available CPU threads
   cl <- makeCluster(max(1, detectCores() - 1))
+  on.exit(stopCluster(cl), add = TRUE)
+  
+  clusterSetRNGStream(cl, iseed = SEED)
+  
   clusterExport(cl, varlist = c("WINDOW", "N_VAL", "N_PC", "N_LAGS", "RF_N_TREES", 
                                "XGB_ETA", "XGB_DEPTHS", "XGB_NMAX", "XGB_KS", "NTHREAD",
                                "design_ml", "train_rows", "rf_candidates", 
@@ -191,8 +195,6 @@ candidate_errors_ml <- function(model, s, h) {
       xgb_candidates(Ysub, h)
     }
   }, cl = cl)
-  
-  stopCluster(cl)
   
   pred <- do.call(rbind, lapply(res, `[[`, "pred")) 
   list(months = months, pred = pred, err = (s$Y[months, 1] - pred)^2)

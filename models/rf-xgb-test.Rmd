@@ -2,6 +2,7 @@
 # EC4308 project - Part 4: Bagging, Random Forest, and XGBoost
 ###############################################################
 
+```{r}
 rm(list = ls())
 library(randomForest)   
 library(xgboost)       
@@ -9,7 +10,9 @@ library(parallel)
 library(lubridate)
 library(here)
 library(pbapply)
+```
 
+```{r}
 #--------------------------------------------------------------
 # 0. ALIGNMENT SETTINGS & PATHS
 #--------------------------------------------------------------
@@ -39,7 +42,9 @@ NTHREAD       <- if (N_CORES > 1) 1 else 4
 
 FC_DIR        <- here("results", "forecasts")
 dir.create(FC_DIR, recursive = TRUE, showWarnings = FALSE)
+```
 
+```{r}
 #--------------------------------------------------------------
 # 1. DATA PREPARATION 
 #--------------------------------------------------------------
@@ -89,7 +94,9 @@ load_sample_data <- function(file, us_vars = NULL) {
 
   list(Y = Y, dates = dates, nprev = nrow(Y) - WINDOW)
 }
+```
 
+```{r}
 #--------------------------------------------------------------
 # 2. HELPER FUNCTIONS & DESIGN MATRIX CREATION
 #--------------------------------------------------------------
@@ -116,7 +123,9 @@ design_ml <- function(Ysub, h, n_pc = N_PC) {
   
   list(y = y, X = X, x_out = x_out)
 }
+```
 
+```{r}
 #--------------------------------------------------------------
 # 3. MODEL FITTERS & CANDIDATE EVALUATION
 #--------------------------------------------------------------
@@ -154,14 +163,16 @@ xgb_candidates <- function(Ysub, h) {
   for (depth in XGB_DEPTHS) {
     m <- xgb.train(make_params(depth), dtrain, nrounds = XGB_NMAX, verbose = 0)
     for (k in XGB_KS) {
-      preds_matrix[1, col_idx] <- predict(m, dtest, iteration_range = c(1, k))
+      preds_matrix[1, col_idx] <- predict(m, dtest, iterationrange = c(1, k))
       col_idx <- col_idx + 1
     }
   }
   
   list(pred = as.numeric(preds_matrix))
 }
+```
 
+```{r}
 #--------------------------------------------------------------
 # 4. RECURSIVE VALIDATION & RUNNER
 #--------------------------------------------------------------
@@ -255,7 +266,9 @@ run_model_ml <- function(model, s) {
   idx_all <- WINDOW + 1:s$nprev
   list(pred = P, real = s$Y[idx_all, 1], dates = s$dates[idx_all], path = do.call(rbind, path))
 }
+```
 
+```{r}
 #--------------------------------------------------------------
 # 5. EXECUTION & EXPORT FOR GROUP FORECAST COMBINATION
 #--------------------------------------------------------------
@@ -297,3 +310,4 @@ for (sample_name in names(SAMPLES)) {
   
   cat("Exported forecasts and tuning paths to:", FC_DIR, "\n")
 }
+```

@@ -149,35 +149,66 @@ kable(
 )
 ```
 
-## Compare self-adjusted seasonality and officially adjusted main_data
+## Descriptive statistics for inflation
 
 ```{r}
-inflation_compare <- main_data_self %>%
-  select(date, inflation_self = inflation_mom) %>%
-  inner_join(
-    main_data_official %>%
-      select(date, inflation_official = inflation_mom),
-    by = "date"
-  )
-
-inflation_compare %>%
-  pivot_longer(
-    cols = -date,
-    names_to = "series",
-    values_to = "inflation"
-  ) %>%
-  ggplot(aes(date, inflation * 100, color = series)) +
-  geom_line(linewidth = 0.5, alpha = 0.8) +
+p_inflation <- main_data_official %>%
+  filter(!is.na(inflation_mom)) %>%
+  ggplot(
+    aes(date, inflation_mom * 100)
+  ) +
+  geom_line(linewidth = 0.5) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dotted"
+  ) +
+  geom_vline(
+    xintercept = as.Date("2012-02-01"),
+    linetype = "dashed",
+    color = "firebrick"
+  ) +
   labs(
-    title = "Canadian Monthly Inflation: Self-Adjusted vs Officially-Adjusted",
+    title = "Canadian Monthly CPI Inflation",
+    subtitle = "Official seasonally adjusted CPI",
     x = "Year",
-    y = "Monthly Log Inflation (%)",
-    color = "CPI Adjustment"
+    y = "Monthly log inflation (%)"
   ) +
   theme_minimal()
+
+print(p_inflation)
 ```
 
-## Descriptive statistics for inflation
+```{r}
+inflation_stats <- main_data_official %>%
+  filter(!is.na(inflation_mom)) %>%
+  mutate(
+    inflation_pct = inflation_mom * 100,
+    period = case_when(
+      date < as.Date("2012-02-01") ~ "1992-2012", # until jan 2012 
+      date < as.Date("2020-01-01") ~ "2012-2019", # until feb 2012 
+      TRUE ~ "2020-2026"
+    )
+  ) %>%
+  group_by(period) %>%
+  summarise(
+    N = n(),
+    Mean = mean(inflation_pct),
+    SD = sd(inflation_pct),
+    Min = min(inflation_pct),
+    Max = max(inflation_pct),
+    AC1 = cor(
+      inflation_pct[-1],
+      inflation_pct[-length(inflation_pct)]
+    ),
+    .groups = "drop"
+  )
+
+knitr::kable(
+  inflation_stats,
+  digits = 3,
+  caption = "Descriptive Statistics of Canadian Monthly Inflation"
+)
+```
 
 ```{r}
 # descriptive statistics 
@@ -251,29 +282,6 @@ Interpretation:
 Does inflation volatility change across economic periods? 
 
 ```{r}
-volatility_self <- main_data_self %>%
-  arrange(date) %>%
-  mutate(
-    rolling_sd_12 = zoo::rollapply(
-      inflation_mom,
-      width = 12,
-      FUN = sd,
-      fill = NA,
-      align = "right"
-    )
-  )
-
-ggplot(volatility_self, aes(date, rolling_sd_12 * 100)) +
-  geom_line() +
-  labs(
-    title = "12-Month Rolling Volatility of Canadian Inflation (Self-adjusted CPI)",
-    x = "Year",
-    y = "Rolling SD (monthly percentage points)"
-  ) +
-  theme_minimal()
-```
-
-```{r}
 volatility_official <- main_data_official %>%
   arrange(date) %>%
   mutate(
@@ -299,99 +307,4 @@ ggplot(volatility_official, aes(date, rolling_sd_12 * 100)) +
     y = "Rolling SD (monthly percentage points)"
   ) +
   theme_minimal()
-```
-
-```{r}
-inflation_stats <- main_data_official %>%
-  mutate(
-    period = case_when(
-      date < as.Date("2020-01-01") ~ "1992-2019",
-      date <= as.Date("2022-12-01") ~ "2020-2022",
-      TRUE ~ "2023-2026"
-    ),
-    inflation_pct = inflation_mom * 100
-  ) %>%
-  group_by(period) %>%
-  summarise(
-    N = sum(!is.na(inflation_pct)),
-    Mean = mean(inflation_pct, na.rm = TRUE),
-    Median = median(inflation_pct, na.rm = TRUE),
-    SD = sd(inflation_pct, na.rm = TRUE),
-    Min = min(inflation_pct, na.rm = TRUE),
-    Max = max(inflation_pct, na.rm = TRUE),
-    AC1 = cor(
-      inflation_pct[-1],
-      inflation_pct[-length(inflation_pct)],
-      use = "complete.obs"
-    ),
-    AC12 = cor(
-      inflation_pct[-(1:12)],
-      inflation_pct[
-        1:(length(inflation_pct) - 12)
-      ],
-      use = "complete.obs"
-    ),
-    .groups = "drop"
-  )
-
-knitr::kable(inflation_stats, digits = 3)
-```
-
-```{r}
-p_inflation <- main_data_official %>%
-  filter(!is.na(inflation_mom)) %>%
-  ggplot(
-    aes(date, inflation_mom * 100)
-  ) +
-  geom_line(linewidth = 0.5) +
-  geom_hline(
-    yintercept = 0,
-    linetype = "dotted"
-  ) +
-  geom_vline(
-    xintercept = as.Date("2012-02-01"),
-    linetype = "dashed",
-    color = "firebrick"
-  ) +
-  labs(
-    title = "Canadian Monthly CPI Inflation",
-    subtitle = "Official seasonally adjusted CPI",
-    x = "Year",
-    y = "Monthly log inflation (%)"
-  ) +
-  theme_minimal()
-
-print(p_inflation)
-```
-
-```{r}
-inflation_stats <- main_data_official %>%
-  filter(!is.na(inflation_mom)) %>%
-  mutate(
-    inflation_pct = inflation_mom * 100,
-    period = case_when(
-      date < as.Date("2012-02-01") ~ "1992-2012",
-      date < as.Date("2020-01-01") ~ "2012-2019",
-      TRUE ~ "2020-2026"
-    )
-  ) %>%
-  group_by(period) %>%
-  summarise(
-    N = n(),
-    Mean = mean(inflation_pct),
-    SD = sd(inflation_pct),
-    Min = min(inflation_pct),
-    Max = max(inflation_pct),
-    AC1 = cor(
-      inflation_pct[-1],
-      inflation_pct[-length(inflation_pct)]
-    ),
-    .groups = "drop"
-  )
-
-knitr::kable(
-  inflation_stats,
-  digits = 3,
-  caption = "Descriptive Statistics of Canadian Monthly Inflation"
-)
 ```

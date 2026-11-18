@@ -1,33 +1,11 @@
 # Loading and cleaning the data
 
 Sources: 
-- Macroeconomic predictors: https://www.stevanovic.uqam.ca/DS_LCMD.html 
+- Macroeconomic predictors: https://www.stevanovic.uqam.ca/DS_LCMD.html   `balanced_can_md.xlsx`
 - Canadian CPI: https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1810000401 (check at 8:30pm)
 - FRED-MD data: https://www.stlouisfed.org/research/economists/mccracken/fred-databases 
 
-References:
-
-Fortin-Gagnon, O., Leroux, M., Stevanovic, D. and Surprenant, S. (2022), A large Canadian database for macroeconomic analysis. Canadian Journal of Economics/Revue canadienne d'économique, 55: 1799-1833. https://doi.org/10.1111/caje.12618 
-
-Statistics Canada. Table 18-10-0004-01  Consumer Price Index, monthly, not seasonally adjusted. DOI: https://doi.org/10.25318/1810000401-eng
-
-## Data is obtained from:
-
-**August 2026** zip file downloaded from the data source
-
-readme.txt content: 
-
-These files contain datasets used in: 
-Fortin-Gagnon, Leroux, Stevanovic and Surprenant (2018) A Large Canadian Data for Macroeconomic Analysis.
-
-- `CAN_MD.xlsx`: raw data as collected from StatCan. It starts from 1914 because the CPI series is available from that year
-- `TR_CAN_MD.xlsx`: data from CAN_MD.xlsx transformed to induce stationarity.
-- `balanced_can_md.xlsx`: stationary and balanced panel starting from 1981M01. Missing values are replaced by EM algorithm. 
-- `Table_can_md.xlsx`: detailed data description
-
-We use `balanced_can_md.xlsx` as the data is already stationary and balanced panel. 
-
-From `Table_can_md.xlsx` we can see that the following variables are discontinued and ends in September 2020. we should remove these from the data source 
+## Notes about CAN-MD
 - `CRED_T_discontinued`
 - `CRED_HOUS_discontinued`
 - `CRED_MORT_discontinued`
@@ -225,58 +203,6 @@ comparison <- cpi_adjusted %>%
 
 range(comparison$date)
 nrow(comparison)
-```
-
-```{r}
-# plot self-adjusted and officially adjusted
-comparison_long <- comparison %>%
-  select(date, cpi_adjusted, cpi_official) %>%
-  pivot_longer(
-    cols = -date,
-    names_to = "series",
-    values_to = "cpi"
-  )
-
-ggplot(comparison_long,
-       aes(x = date, y = cpi, color = series)) +
-  geom_line(linewidth = 0.7) +
-  labs(
-    title = "Comparison of Seasonally Adjusted Canadian CPI",
-    x = "Year",
-    y = "CPI Index",
-    color = "Series"
-  ) +
-  theme_minimal()
-```
-
-```{r}
-# compare inflation rates
-comparison <- comparison %>%
-  arrange(date) %>%
-  mutate(
-    inflation_self =
-      1200 * (log(cpi_adjusted) -
-              log(lag(cpi_adjusted))),
-
-    inflation_official =
-      1200 * (log(cpi_official) -
-              log(lag(cpi_official)))
-  )
-
-ggplot(comparison, aes(x = date)) +
-  geom_line(
-    aes(y = inflation_self, color = "Self-adjusted")
-  ) +
-  geom_line(
-    aes(y = inflation_official, color = "Official")
-  ) +
-  labs(
-    title = "Monthly Inflation: Self-adjusted vs Official",
-    x = "Year",
-    y = "Annualised Inflation (%)",
-    color = "Series"
-  ) +
-  theme_minimal()
 ```
 
 ```{r}

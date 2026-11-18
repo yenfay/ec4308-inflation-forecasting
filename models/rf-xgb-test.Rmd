@@ -21,7 +21,6 @@ RETUNE_EVERY  <- 12              # Re-validate once every 12 months (yearly)
 SEED          <- 456857
 set.seed(SEED)
 
-# Target datasets (main: official; robustness: self)
 SAMPLES       <- c(official = "main_data_official.rds", self = "main_data_self.rds")
 DATA_SAMPLE   <- "official" # Change to "self" or run loop for both samples
 
@@ -38,7 +37,6 @@ N_PC          <- 4               # 4 PCs added to predictor set (following Medei
 N_CORES       <- if (.Platform$OS.type == "windows") 1 else max(1, detectCores() - 1)
 NTHREAD       <- if (N_CORES > 1) 1 else 4
 
-# Output directory for GitHub forecast combination
 FC_DIR        <- here("results", "forecasts")
 dir.create(FC_DIR, recursive = TRUE, showWarnings = FALSE)
 
@@ -51,15 +49,12 @@ fill_forward <- function(x) {
 }
 
 load_sample_data <- function(file, us_vars = NULL) {
-  # 1. Try standard relative path (works when VS Code is open to project root)
   target_path <- file.path("data", "processed", file)
   
-  # 2. Try using the 'here' package (works regardless of sub-folder execution)
   if (!file.exists(target_path) && requireNamespace("here", quietly = TRUE)) {
     target_path <- here::here("data", "processed", file)
   }
   
-  # 3. Fallback: Search parent working directories dynamically
   if (!file.exists(target_path)) {
     possible_paths <- c(
       file.path("..", "data", "processed", file),
@@ -70,7 +65,6 @@ load_sample_data <- function(file, us_vars = NULL) {
     if (length(found) > 0) target_path <- found[1]
   }
   
-  # 4. Stop with a clear error if the file is truly nowhere to be found
   if (!file.exists(target_path)) {
     stop(paste0(
       "Cannot find '", file, "'. Current working directory is: ", getwd(), "\n",
@@ -101,7 +95,6 @@ load_sample_data <- function(file, us_vars = NULL) {
 #--------------------------------------------------------------
 train_rows <- function(t, h) max(1, t - WINDOW):(t - h)
 
-# Standardized design matrix with 4 lags and 4 principal components
 design_ml <- function(Ysub, h, n_pc = N_PC) {
   ok <- apply(Ysub, 2, sd) > 0
   Ysub_clean <- Ysub[, ok, drop = FALSE]
@@ -143,7 +136,7 @@ bag_candidates <- function(Ysub, h) {
   list(pred = pred, importance = randomForest::importance(model))
 }
 
-# ---- XGBoost Candidates (Grid across depths and rounds) ----
+# ---- XGBoost Candidates  ----
 xgb_candidates <- function(Ysub, h) {
   d <- design_ml(Ysub, h, n_pc = N_PC)
   
@@ -182,19 +175,16 @@ choose_candidate_ml <- function(ce, t, h) {
 candidate_errors_ml <- function(model, s, h) {
   months <- (WINDOW + 1 - h - N_VAL + 1):(WINDOW + s$nprev)
   
-  # 1. Setup cluster across available CPU threads & set parallel RNG seed
   cl <- makeCluster(N_CORES)
   on.exit(stopCluster(cl), add = TRUE)
   clusterSetRNGStream(cl, SEED)
   
-  # 2. Explicitly load packages on EVERY worker node
   clusterEvalQ(cl, {
     library(randomForest)
     library(xgboost)
     NULL
   })
   
-  # 3. Export environment & functions explicitly
   clusterExport(cl, 
                 varlist = c("WINDOW", "N_VAL", "N_PC", "N_LAGS", "RF_N_TREES", 
                             "XGB_ETA", "XGB_DEPTHS", "XGB_NMAX", "XGB_KS", "NTHREAD",
@@ -202,7 +192,6 @@ candidate_errors_ml <- function(model, s, h) {
                             "bag_candidates", "xgb_candidates", "s"), 
                 envir = environment())
   
-  # 4. Run parallel execution
   res <- pblapply(months, function(m) {
     require(randomForest)
     require(xgboost)
@@ -244,13 +233,11 @@ run_model_ml <- function(model, s) {
           lambda_ratio = NA, val_mse = val_m, nsel = NA
         )
       } else if (model == "xgb") {
-        # Re-validate hyperparameter tuning once every RETUNE_EVERY steps
         if ((k - 1) %% RETUNE_EVERY == 0) ch <- choose_candidate_ml(ce, t, h)
         
         row <- match(t, ce$months)
         P[k, h] <- ce$pred[row, ch$pos]
         
-        # Decode chosen hyperparams (depth and nrounds)
         n_ks  <- length(XGB_KS)
         d_idx <- (ch$pos - 1) %/% n_ks + 1
         k_idx <- (ch$pos - 1) %% n_ks + 1

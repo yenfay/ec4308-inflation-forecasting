@@ -236,7 +236,7 @@ We plot autocorrelation and partial autocorrelation to examine our inflation var
 ```{r}
 # comparing across same time periods (starting from 1992)
 start_date <- as.Date("1992-01-01")
-end_date <- as.Date("2019-12-01")
+end_date <- as.Date("2012-02-01")
 
 self_common <- main_data_self %>%
   filter(date >= start_date, date <= end_date)

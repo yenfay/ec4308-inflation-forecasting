@@ -284,15 +284,12 @@ for (sample_name in names(SAMPLES)) {
   res_bag <- run_model_ml("bag", s)
   res_xgb <- run_model_ml("xgb", s)
   
-  # Combine predictions
   combined_P <- list(rf = res_rf$pred, bag = res_bag$pred, xgb = res_xgb$pred)
   r_all <- list(P = combined_P, real = s$Y[WINDOW + 1:s$nprev, 1], dates = s$dates[WINDOW + 1:s$nprev])
   
-  # Export forecast CSV formatted exactly like Ridge & FARM
   fc_df <- export_forecasts(r_all, sample_name)
   write.csv(fc_df, file.path(FC_DIR, paste0("forecasts_rf_xgb_", sample_name, ".csv")), row.names = FALSE)
   
-  # Export tuning paths
   path_df <- rbind(res_rf$path, res_bag$path, res_xgb$path)
   path_df$sample <- sample_name
   path_df$target_date <- format(path_df$target_date, "%Y-%m-%d")

@@ -177,10 +177,10 @@ candidate_errors_ml <- function(model, s, h) {
   cl <- makeCluster(max(1, detectCores() - 1))
   on.exit(stopCluster(cl), add = TRUE)
   
-  clusterSetRNGStream(cl, iseed = SEED)  # <--- ADD THIS LINE HERE
+  clusterSetRNGStream(cl, iseed = SEED)
   
   clusterExport(cl, varlist = c("WINDOW", "N_VAL", "N_PC", "N_LAGS", "RF_N_TREES", 
-                               "XGB_ETA", "XGB_DEPTHS", "XGB_NMAX", "XGB_KS",
+                               "XGB_ETA", "XGB_DEPTHS", "XGB_NMAX", "XGB_KS", "NTHREAD",
                                "design_ml", "train_rows", "rf_candidates", 
                                "bag_candidates", "xgb_candidates", "xgb.DMatrix", 
                                "xgb.train", "randomForest"), envir = environment())
@@ -195,8 +195,6 @@ candidate_errors_ml <- function(model, s, h) {
       xgb_candidates(Ysub, h)
     }
   }, cl = cl)
-  
-  stopCluster(cl)
   
   pred <- do.call(rbind, lapply(res, `[[`, "pred")) 
   list(months = months, pred = pred, err = (s$Y[months, 1] - pred)^2)
